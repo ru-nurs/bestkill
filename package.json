@@ -1,0 +1,14 @@
+{
+  "name": "bestkill-node-copy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Node mirror of https://bestkill.ru/",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "mirror": "node scripts/warm-cache.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
