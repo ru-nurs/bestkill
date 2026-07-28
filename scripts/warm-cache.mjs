@@ -8,12 +8,13 @@ const seedPaths = [
   "/store",
   "/rules_public",
   "/news",
-  "/news/new?id=117",
-  "/bans/",
-  "/banlist?server=1",
-  "/admins?server=1",
-  "/support/",
-  "/recovery",
+  "/bans",
+  "/banlist",
+  "/admins",
+  "/support",
+  "/forum",
+  "/stats",
+  "/privacy-policy",
   "/processing-of-personal-data"
 ];
 
@@ -34,7 +35,7 @@ async function isServerRunning() {
 
 async function ensureServer() {
   if (await isServerRunning()) {
-    console.log(`Using running mirror at ${origin}`);
+    console.log(`Using running site at ${origin}`);
     return;
   }
 

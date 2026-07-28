@@ -1,12 +1,12 @@
 {
-  "name": "bestkill-node-copy",
+  "name": "oldera-game-site",
   "version": "1.0.0",
   "private": true,
-  "description": "Local Node mirror of https://bestkill.ru/",
+  "description": "Standalone Oldera.uz game server website",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "mirror": "node scripts/warm-cache.mjs"
+    "check": "node scripts/warm-cache.mjs"
   },
   "engines": {
     "node": ">=20"
