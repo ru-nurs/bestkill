@@ -12,7 +12,7 @@ const DB_FILE = path.join(DATA_DIR, "oldera.json");
 const BRAND = {
   name: "OLDERA.UZ",
   domain: "oldera.uz",
-  serverName: "Oldera Public Server",
+  serverName: "Oldera Zombie Server",
   serverAddress: "195.158.4.108:27047"
 };
 
