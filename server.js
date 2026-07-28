@@ -46,12 +46,71 @@ const SERVICES = [
     ]
   },
   {
+    id: "immunity",
+    name: "Иммунитет",
+    tariffs: [
+      ["7 дней", 20000],
+      ["30 дней", 65000],
+      ["60 дней", 115000]
+    ]
+  },
+  {
     id: "prefix",
     name: "Префикс",
     tariffs: [
       ["30 дней", 25000],
       ["Навсегда", 120000]
     ]
+  },
+  {
+    id: "skin_snegovik",
+    name: "Скин «Snegovik»",
+    tariffs: [["30 дней", 35000], ["Навсегда", 150000]]
+  },
+  {
+    id: "skin_neo",
+    name: "Скин «Neo»",
+    tariffs: [["30 дней", 35000], ["Навсегда", 150000]]
+  },
+  {
+    id: "skin_crysis",
+    name: "Скин «Crysis»",
+    tariffs: [["30 дней", 35000], ["Навсегда", 150000]]
+  },
+  {
+    id: "skin_scream",
+    name: "Скин «Scream»",
+    tariffs: [["30 дней", 35000], ["Навсегда", 150000]]
+  },
+  {
+    id: "skin_neco",
+    name: "Скин «Neco»",
+    tariffs: [["30 дней", 35000], ["Навсегда", 150000]]
+  },
+  {
+    id: "skin_shadow",
+    name: "Скин «Shadow»",
+    tariffs: [["30 дней", 40000], ["Навсегда", 170000]]
+  },
+  {
+    id: "skin_joker",
+    name: "Скин «Joker»",
+    tariffs: [["30 дней", 40000], ["Навсегда", 170000]]
+  },
+  {
+    id: "skin_deadpool",
+    name: "Скин «Deadpool»",
+    tariffs: [["30 дней", 45000], ["Навсегда", 190000]]
+  },
+  {
+    id: "skin_assassin",
+    name: "Скин «Assassin»",
+    tariffs: [["30 дней", 45000], ["Навсегда", 190000]]
+  },
+  {
+    id: "skin_zombie_hunter",
+    name: "Скин «Zombie Hunter»",
+    tariffs: [["30 дней", 50000], ["Навсегда", 210000]]
   }
 ];
 
@@ -605,7 +664,22 @@ function routePage(pathname) {
   if (pathname === "/admins") return adminsPage();
   if (pathname === "/support") return supportPage();
   if (pathname === "/banlist" || pathname === "/bans") {
-    return simplePage("Баны", pathname, `<h2>Список банов</h2><p class="empty">Список пуст. Чужие баны здесь не отображаются.</p>`);
+    return simplePage("Баны", pathname, `<h2>Список банов</h2>
+      <p class="note">После интеграции с бан-системой сервера здесь будут отображаться реальные баны: причина, срок, сколько осталось и платный разбан.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Игрок</th>
+            <th>Причина</th>
+            <th>Срок бана</th>
+            <th>Осталось</th>
+            <th>Разбан</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="5" class="empty-cell">Активных банов пока нет</td></tr>
+        </tbody>
+      </table>`);
   }
   if (pathname === "/forum" || pathname === "/chat" || pathname === "/news") {
     const title = pathname === "/forum" ? "Форум" : pathname === "/chat" ? "Чат сервера" : "Новости";
