@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +9,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "oldera.json");
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://oldera.uz";
+const ADMIN_API_URL = process.env.ADMIN_API_URL || process.env.HOSTIN_ADMIN_API_URL || "";
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || process.env.HOSTIN_API_TOKEN || "";
+const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || "";
 
 const BRAND = {
   name: "OLDERA.UZ",
@@ -180,9 +185,11 @@ async function readDb() {
     db.orders ||= [];
     db.tickets ||= [];
     db.topups ||= [];
+    db.payments ||= [];
+    db.bans ||= [];
     return db;
   } catch {
-    return { users: [], orders: [], tickets: [], topups: [] };
+    return { users: [], orders: [], tickets: [], topups: [], payments: [], bans: [] };
   }
 }
 
@@ -218,6 +225,207 @@ function findTariff(service, tariffName) {
 
 function formatMoney(value) {
   return `${Number(value || 0).toLocaleString("ru-RU")} сум`;
+}
+
+function publicUrl(pathname) {
+  return new URL(pathname, PUBLIC_BASE_URL.endsWith("/") ? PUBLIC_BASE_URL : `${PUBLIC_BASE_URL}/`).toString();
+}
+
+function safeEqualText(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function parseJsonEnv(name, fallback = {}) {
+  try {
+    return process.env[name] ? JSON.parse(process.env[name]) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parseDays(tariffName) {
+  const match = String(tariffName || "").match(/\d+/);
+  return match ? Number(match[0]) : 0;
+}
+
+function renderTemplate(template, values) {
+  return String(template || "").replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
+}
+
+function createIssueCommand(order) {
+  const commands = parseJsonEnv("SERVICE_COMMANDS_JSON", {});
+  const template = commands[order.service] || process.env.DEFAULT_SERVICE_COMMAND || "";
+  if (!template) return "";
+  const target = order.steamId || order.nickname || order.login;
+  return renderTemplate(template, {
+    target,
+    login: order.login,
+    nickname: order.nickname,
+    steamId: order.steamId,
+    service: order.service,
+    serviceName: order.serviceName,
+    tariff: order.tariffName,
+    days: parseDays(order.tariffName),
+    price: order.price
+  });
+}
+
+function createPaymentLink(payment, provider) {
+  const normalizedProvider = String(provider || "").toLowerCase();
+
+  if (normalizedProvider === "click" && process.env.CLICK_SERVICE_ID) {
+    const url = new URL("https://my.click.uz/services/pay");
+    url.searchParams.set("service_id", process.env.CLICK_SERVICE_ID);
+    if (process.env.CLICK_MERCHANT_ID) url.searchParams.set("merchant_id", process.env.CLICK_MERCHANT_ID);
+    url.searchParams.set("amount", String(payment.amount));
+    url.searchParams.set("transaction_param", payment.id);
+    url.searchParams.set("return_url", publicUrl("/balance"));
+    return url.toString();
+  }
+
+  if (normalizedProvider === "payme" && process.env.PAYME_MERCHANT_ID) {
+    const payload = `m=${process.env.PAYME_MERCHANT_ID};ac.payment_id=${payment.id};a=${payment.amount * 100}`;
+    return `https://checkout.paycom.uz/${Buffer.from(payload).toString("base64")}`;
+  }
+
+  return "";
+}
+
+function verifyClickSignature(data) {
+  if (!process.env.CLICK_SECRET_KEY) return true;
+  const expected = createHash("md5")
+    .update(`${data.click_trans_id}${data.service_id}${process.env.CLICK_SECRET_KEY}${data.merchant_trans_id}${data.amount}${data.action}${data.sign_time}`)
+    .digest("hex");
+  return safeEqualText(expected, data.sign_string);
+}
+
+async function sendAdminApi(payload) {
+  if (!ADMIN_API_URL) return { ok: false, skipped: true, message: "ADMIN_API_URL is not configured" };
+  const response = await fetch(ADMIN_API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(ADMIN_API_KEY ? { authorization: `Bearer ${ADMIN_API_KEY}`, "x-api-key": ADMIN_API_KEY } : {})
+    },
+    body: JSON.stringify(payload)
+  });
+  const responseText = await response.text();
+  return {
+    ok: response.ok,
+    status: response.status,
+    message: response.ok ? "Admin API accepted request" : `Admin API failed with HTTP ${response.status}`,
+    responseText: responseText.slice(0, 2000)
+  };
+}
+
+async function sendRconCommand(command) {
+  const { host, port } = splitAddress(process.env.RCON_HOST ? `${process.env.RCON_HOST}:${process.env.RCON_PORT || 27015}` : BRAND.serverAddress);
+  const password = process.env.RCON_PASSWORD || "";
+  if (!password || !command) return { ok: false, skipped: true, message: "RCON_PASSWORD or command is not configured" };
+
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      socket.close();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, message: "RCON timeout" }), 2500);
+
+    socket.once("error", (error) => finish({ ok: false, message: error.message }));
+    socket.once("message", (challengePacket) => {
+      const challenge = challengePacket.toString("utf8").match(/challenge rcon\s+(-?\d+)/)?.[1];
+      if (!challenge) {
+        finish({ ok: false, message: "RCON challenge was not returned" });
+        return;
+      }
+      const packet = Buffer.from(`\xff\xff\xff\xffrcon ${challenge} "${password}" ${command}\n`, "binary");
+      socket.once("message", (reply) => finish({ ok: true, message: reply.toString("utf8").replace(/^\xff{4}/, "").trim() || "RCON command sent" }));
+      socket.send(packet, port, host);
+    });
+    socket.send(Buffer.from("\xff\xff\xff\xffchallenge rcon\n", "binary"), port, host);
+  });
+}
+
+async function issueServerEntitlement(order) {
+  const command = createIssueCommand(order);
+  const payload = {
+    action: "issue_service",
+    server: BRAND.serverAddress,
+    order,
+    command
+  };
+
+  if (ADMIN_API_URL) return sendAdminApi(payload);
+  if (process.env.RCON_PASSWORD) return sendRconCommand(command);
+  return { ok: false, skipped: true, message: "Server delivery is waiting for ADMIN_API_URL or RCON settings" };
+}
+
+async function issueServerUnban(ban, order) {
+  const template = process.env.UNBAN_COMMAND_TEMPLATE || "";
+  const command = template ? renderTemplate(template, {
+    target: ban.steamId || ban.player || ban.id,
+    player: ban.player,
+    steamId: ban.steamId,
+    banId: ban.id,
+    price: order.price
+  }) : "";
+
+  if (ADMIN_API_URL) return sendAdminApi({ action: "unban", server: BRAND.serverAddress, ban, order, command });
+  if (process.env.RCON_PASSWORD) return sendRconCommand(command);
+  return { ok: false, skipped: true, message: "Unban delivery is waiting for ADMIN_API_URL or RCON settings" };
+}
+
+function creditPayment(db, payment, note = "payment callback") {
+  if (!payment || payment.status === "paid") return null;
+  const user = db.users.find((item) => item.login.toLowerCase() === payment.login.toLowerCase());
+  if (!user) return null;
+  payment.status = "paid";
+  payment.paidAt = new Date().toISOString();
+  user.balance = Number(user.balance || 0) + Number(payment.amount || 0);
+  db.topups.push({ login: user.login, amount: payment.amount, comment: note, paymentId: payment.id, createdAt: payment.paidAt });
+  return user;
+}
+
+async function getBans(db = null) {
+  if (process.env.BAN_API_URL) {
+    const response = await fetch(process.env.BAN_API_URL, {
+      headers: {
+        accept: "application/json",
+        ...(process.env.BAN_API_KEY || ADMIN_API_KEY ? { authorization: `Bearer ${process.env.BAN_API_KEY || ADMIN_API_KEY}` } : {})
+      }
+    });
+    if (!response.ok) throw new Error(`Ban API HTTP ${response.status}`);
+    const payload = await response.json();
+    const items = Array.isArray(payload) ? payload : payload.bans || payload.data || [];
+    return items.map(normalizeBan);
+  }
+
+  const currentDb = db || await readDb();
+  return currentDb.bans.map(normalizeBan).filter((ban) => !ban.bannedUntil || new Date(ban.bannedUntil).getTime() > Date.now());
+}
+
+function normalizeBan(item) {
+  const bannedAt = item.bannedAt || item.createdAt || new Date().toISOString();
+  const bannedUntil = item.bannedUntil || item.expiresAt || item.end || "";
+  const remainingMs = bannedUntil ? Math.max(0, new Date(bannedUntil).getTime() - Date.now()) : 0;
+  const remainingMinutes = bannedUntil ? Math.ceil(remainingMs / 60000) : null;
+  return {
+    id: String(item.id || item.banId || randomUUID()),
+    player: item.player || item.nickname || item.name || "Unknown",
+    steamId: item.steamId || item.authid || item.authId || "",
+    reason: item.reason || "No reason",
+    duration: item.duration || item.length || (bannedUntil ? "temporary" : "permanent"),
+    bannedAt,
+    bannedUntil,
+    remaining: remainingMinutes === null ? "permanent" : `${remainingMinutes} min`,
+    admin: item.admin || ""
+  };
 }
 
 async function queryServerInfo(address) {
@@ -493,6 +701,16 @@ function balancePage() {
             <button class="primary" type="submit">Проверить баланс</button>
             <div id="balance-result" class="result"></div>
           </form>
+          <form id="payment-form" class="stack-form pay-form">
+            <input name="login" maxlength="30" placeholder="Логин для пополнения">
+            <input name="amount" type="number" min="1000" step="1000" placeholder="Сумма, сум">
+            <select name="provider">
+              <option value="click">Click</option>
+              <option value="payme">Payme</option>
+            </select>
+            <button class="primary" type="submit">Создать платеж</button>
+            <div id="payment-result" class="result"></div>
+          </form>
         </div>
         <div>
           <h2>Ручное пополнение</h2>
@@ -583,6 +801,7 @@ function styles() {
 .table-wrap{overflow:auto;border-radius:8px;border:1px solid #2d3b4e}table{width:100%;border-collapse:collapse;background:#0d1521}th,td{border-bottom:1px solid #293648;border-right:1px solid #293648;padding:12px 14px;text-align:left;font-size:14px}th{color:#c4cee0;background:#111a27}.ip{color:#eaf4ff;font-weight:800}.meter{position:relative;display:block;min-width:86px;height:30px;background:#761927;border:1px solid #b53b52;border-radius:4px;overflow:hidden;text-align:center}.meter i,.total i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--cyan),var(--cyan) 4px,#62f0e1 4px,#62f0e1 8px)}.meter b{position:absolute;inset:0;display:grid;place-items:center;font-weight:500}.actions{white-space:nowrap}.small-btn{display:inline-grid!important;place-items:center;width:34px;height:28px;margin-right:6px;border-radius:4px;border:1px solid #ffffff30}.green{background:#176b35}.red{background:#7d1c2d}.gold{background:#a88929}.total{height:32px;position:relative;background:#7d1b2b;border:1px solid #bf3a51;border-radius:5px;overflow:hidden;margin-top:10px;text-align:center}.total span{position:absolute;inset:0;display:grid;place-items:center}
 .empty-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.player-card{min-height:132px;border:1px solid #2b3b50;border-radius:8px;background:#0e1825;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.player-card span{color:#ffce48}.player-card b{margin:10px 0}.player-card small,.empty,.note,.policy{color:var(--muted);line-height:1.5}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status-pill{color:#9decc5;background:#143525;border:1px solid #26754f;border-radius:999px;padding:6px 10px;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:grid;gap:7px;color:#cbd7e7}.form-grid .wide{grid-column:1/-1}.stack-form{display:grid;gap:12px}.service-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:18px 0 24px}.service-card{display:grid;grid-template-columns:70px 1fr;gap:14px;align-items:start;background:#0c1624;border:1px solid #2f4056;border-radius:8px;padding:14px;position:relative;overflow:hidden}.service-card:before{content:"";position:absolute;inset:0;opacity:.16;background:linear-gradient(135deg,#2de2e6,#f84aa7,#ffb000);pointer-events:none}.service-card h3{margin:0 0 6px}.service-card strong{display:block;color:#fff;margin-bottom:8px}.service-card ul{margin:0;padding-left:18px;color:#b9c7d9;font-size:13px;line-height:1.55}.service-art{width:64px;height:64px;border-radius:8px;display:grid;place-items:center;background:#152033;border:1px solid #ffffff24;box-shadow:0 0 22px #000 inset}.service-art span{font-weight:900;font-size:13px;letter-spacing:.04em}.service-card.cyan .service-art{color:#55fff1;box-shadow:0 0 28px #26d6d0}.service-card.pink .service-art{color:#ff69ba;box-shadow:0 0 28px #f4469b}.service-card.gold .service-art{color:#ffe06c;box-shadow:0 0 28px #d6a72a}.service-card.green .service-art{color:#8dffa9;box-shadow:0 0 28px #27b05b}.service-card.orange .service-art{color:#ffb269;box-shadow:0 0 28px #f08b35}.balance-panel h2{margin-bottom:8px}input,select,textarea{width:100%;background:#0b1320;color:var(--text);border:1px solid #2d3d52;border-radius:6px;padding:12px}textarea{min-height:120px;resize:vertical}.primary{border:0;border-radius:7px;background:linear-gradient(135deg,#28c2e8,#f04c9c);color:white;padding:12px 18px;font-weight:800;cursor:pointer}.result{align-self:center}.success{color:#7df0a6}.error{color:#ff8998}.empty-cell{text-align:center;color:var(--muted)}.rules{line-height:1.9}
 .modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}.modal.show{display:flex}.dialog{width:min(420px,100%);background:#111a27;border:1px solid #34445a;border-radius:10px;padding:24px;position:relative}.dialog form{display:grid;gap:12px}.close{position:absolute;right:14px;top:10px;background:transparent;border:0;color:white;font-size:28px;cursor:pointer}
+.pay-form{margin-top:18px;padding-top:18px;border-top:1px solid #273444}.pay-link{display:inline-block!important;margin-top:8px;color:#7df0ff!important;border-bottom:0!important}.inline-action{border:0;border-radius:5px;background:#b99a34;color:white;padding:8px 10px;font-weight:800;cursor:pointer}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 @media (max-width:900px){.layout{grid-template-columns:1fr}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{padding:0 12px;white-space:nowrap}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}}
 `;
@@ -620,6 +839,12 @@ async function postJson(url, data) {
 
 function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
+}
+
+function escapeText(value) {
+  const div = document.createElement('div');
+  div.textContent = value == null ? '' : String(value);
+  return div.innerHTML;
 }
 
 async function refreshStatus() {
@@ -689,6 +914,45 @@ qs('#topup-form')?.addEventListener('submit', async (event) => {
   result.className = 'result ' + (data.ok ? 'success' : 'error');
   result.textContent = data.message;
 });
+
+qs('#payment-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const result = qs('#payment-result');
+  const data = await postJson('/api/payment/create', formData(event.currentTarget));
+  result.className = 'result ' + (data.ok ? 'success' : 'error');
+  result.innerHTML = data.paymentUrl
+    ? data.message + '<a class="pay-link" href="' + data.paymentUrl + '" target="_blank" rel="noopener">Перейти к оплате</a>'
+    : data.message;
+});
+
+async function loadBans() {
+  const tbody = qs('#ban-rows');
+  if (!tbody) return;
+  try {
+    const response = await fetch('/api/bans');
+    const data = await response.json();
+    const bans = data.bans || [];
+    if (!bans.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">Активных банов пока нет</td></tr>';
+      return;
+    }
+    tbody.innerHTML = bans.map((ban) => '<tr><td>' + escapeText(ban.player) + '<small>' + escapeText(ban.steamId || '') + '</small></td><td>' + escapeText(ban.reason) + '</td><td>' + escapeText(ban.duration) + '</td><td>' + escapeText(ban.remaining) + '</td><td><button class="inline-action" data-unban="' + escapeText(ban.id) + '">Разбан</button></td></tr>').join('');
+  } catch {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">Не удалось загрузить баны</td></tr>';
+  }
+}
+
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-unban]');
+  if (!button) return;
+  const login = prompt('Логин на сайте для списания баланса');
+  if (!login) return;
+  const data = await postJson('/api/unban/order', { login, banId: button.dataset.unban });
+  alert(data.message);
+  loadBans();
+});
+
+loadBans();
 
 qs('#ticket-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -787,6 +1051,301 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (pathname === "/api/payment/create" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const login = String(data.login || "").trim();
+    const amount = Math.floor(Number(data.amount || 0));
+    const provider = String(data.provider || "click").toLowerCase();
+
+    if (!login || amount <= 0) {
+      json(res, 400, { ok: false, message: "Укажите логин и сумму пополнения" });
+      return;
+    }
+
+    const db = await readDb();
+    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
+    if (!user) {
+      json(res, 404, { ok: false, message: "Пользователь не найден" });
+      return;
+    }
+
+    const payment = {
+      id: randomUUID(),
+      login: user.login,
+      amount,
+      provider,
+      status: "pending",
+      createdAt: new Date().toISOString()
+    };
+    payment.paymentUrl = createPaymentLink(payment, provider);
+    db.payments.push(payment);
+    await writeDb(db);
+
+    json(res, 200, {
+      ok: true,
+      paymentId: payment.id,
+      paymentUrl: payment.paymentUrl,
+      message: payment.paymentUrl
+        ? `Платеж создан на ${formatMoney(amount)}. После оплаты баланс начислится автоматически.`
+        : `Платеж создан: ${payment.id}. Добавьте ключи ${provider.toUpperCase()} в Render или подтвердите платеж вручную.`
+    });
+    return;
+  }
+
+  if (pathname === "/api/payments/click" && (req.method === "POST" || req.method === "GET")) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const data = req.method === "GET" ? Object.fromEntries(url.searchParams) : await readRequestBody(req);
+    const paymentId = String(data.merchant_trans_id || data.transaction_param || "");
+    const action = String(data.action || "");
+    const db = await readDb();
+    const payment = db.payments.find((item) => item.id === paymentId);
+
+    const base = {
+      click_trans_id: data.click_trans_id || "",
+      merchant_trans_id: paymentId,
+      merchant_prepare_id: payment?.prepareId || payment?.id || "",
+      error: 0,
+      error_note: "Success"
+    };
+
+    if (!verifyClickSignature(data)) {
+      json(res, 200, { ...base, error: -1, error_note: "Invalid signature" });
+      return;
+    }
+    if (!payment) {
+      json(res, 200, { ...base, error: -5, error_note: "Payment not found" });
+      return;
+    }
+    if (Number(data.amount) && Number(data.amount) !== Number(payment.amount)) {
+      json(res, 200, { ...base, error: -2, error_note: "Invalid amount" });
+      return;
+    }
+
+    if (action === "0") {
+      payment.prepareId ||= randomUUID();
+      payment.status = payment.status === "paid" ? "paid" : "prepared";
+      payment.clickPrepare = { ...data, receivedAt: new Date().toISOString() };
+      await writeDb(db);
+      json(res, 200, { ...base, merchant_prepare_id: payment.prepareId });
+      return;
+    }
+
+    if (action === "1") {
+      if (payment.prepareId && data.merchant_prepare_id && String(data.merchant_prepare_id) !== String(payment.prepareId)) {
+        json(res, 200, { ...base, error: -6, error_note: "Invalid prepare id" });
+        return;
+      }
+      const user = creditPayment(db, payment, "Click payment");
+      if (!user) {
+        json(res, 200, { ...base, error: -5, error_note: "User not found" });
+        return;
+      }
+      payment.clickComplete = { ...data, receivedAt: new Date().toISOString() };
+      await writeDb(db);
+      json(res, 200, { ...base, merchant_prepare_id: payment.prepareId || payment.id, merchant_confirm_id: payment.id });
+      return;
+    }
+
+    json(res, 200, { ...base, error: -3, error_note: "Unsupported action" });
+    return;
+  }
+
+  if (pathname === "/api/payments/payme" && req.method === "POST") {
+    const request = await readRequestBody(req);
+    const auth = String(req.headers.authorization || "");
+    const expectedAuth = process.env.PAYME_SECRET_KEY ? `Basic ${Buffer.from(`Paycom:${process.env.PAYME_SECRET_KEY}`).toString("base64")}` : "";
+
+    const paymeResult = (result) => json(res, 200, { jsonrpc: "2.0", id: request.id || null, result });
+    const paymeError = (code, message, data = null) => json(res, 200, { jsonrpc: "2.0", id: request.id || null, error: { code, message, data } });
+
+    if (expectedAuth && !safeEqualText(auth, expectedAuth)) {
+      paymeError(-32504, "Permission denied");
+      return;
+    }
+
+    const method = String(request.method || "");
+    const params = request.params || {};
+    const paymentId = String(params.account?.payment_id || params.payment_id || "");
+    const transactionId = String(params.id || "");
+    const db = await readDb();
+    const payment = db.payments.find((item) => item.id === paymentId || item.paymeTransactionId === transactionId);
+
+    if (method === "CheckPerformTransaction") {
+      if (!payment) {
+        paymeError(-31050, "Payment not found", "payment_id");
+        return;
+      }
+      if (Number(params.amount) && Number(params.amount) !== Number(payment.amount) * 100) {
+        paymeError(-31001, "Invalid amount", "amount");
+        return;
+      }
+      paymeResult({ allow: payment.status !== "paid" });
+      return;
+    }
+
+    if (method === "CreateTransaction") {
+      if (!payment) {
+        paymeError(-31050, "Payment not found", "payment_id");
+        return;
+      }
+      if (payment.paymeTransactionId && payment.paymeTransactionId !== transactionId) {
+        paymeError(-31008, "Transaction already exists");
+        return;
+      }
+      payment.paymeTransactionId = transactionId;
+      payment.paymeCreateTime ||= Date.now();
+      payment.status = payment.status === "paid" ? "paid" : "prepared";
+      await writeDb(db);
+      paymeResult({ create_time: payment.paymeCreateTime, transaction: payment.id, state: payment.status === "paid" ? 2 : 1 });
+      return;
+    }
+
+    if (method === "PerformTransaction") {
+      if (!payment) {
+        paymeError(-31003, "Transaction not found");
+        return;
+      }
+      const user = creditPayment(db, payment, "Payme payment");
+      if (!user) {
+        paymeError(-31050, "User not found", "payment_id");
+        return;
+      }
+      payment.paymePerformTime ||= Date.now();
+      await writeDb(db);
+      paymeResult({ perform_time: payment.paymePerformTime, transaction: payment.id, state: 2 });
+      return;
+    }
+
+    if (method === "CheckTransaction") {
+      if (!payment) {
+        paymeError(-31003, "Transaction not found");
+        return;
+      }
+      paymeResult({
+        create_time: payment.paymeCreateTime || Date.parse(payment.createdAt),
+        perform_time: payment.paymePerformTime || (payment.paidAt ? Date.parse(payment.paidAt) : 0),
+        cancel_time: payment.paymeCancelTime || 0,
+        transaction: payment.id,
+        state: payment.status === "paid" ? 2 : payment.status === "canceled" ? -1 : 1,
+        reason: payment.paymeCancelReason || null
+      });
+      return;
+    }
+
+    if (method === "CancelTransaction") {
+      if (!payment) {
+        paymeError(-31003, "Transaction not found");
+        return;
+      }
+      if (payment.status !== "paid") {
+        payment.status = "canceled";
+        payment.paymeCancelTime ||= Date.now();
+        payment.paymeCancelReason = params.reason || null;
+        await writeDb(db);
+      }
+      paymeResult({
+        cancel_time: payment.paymeCancelTime || 0,
+        transaction: payment.id,
+        state: payment.status === "paid" ? 2 : -1
+      });
+      return;
+    }
+
+    paymeError(-32601, "Method not found");
+    return;
+  }
+
+  if (pathname === "/api/payment/mark-paid" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const secret = String(data.secret || data.pin || req.headers["x-webhook-secret"] || "");
+    const expected = PAYMENT_WEBHOOK_SECRET || process.env.ADMIN_PIN || "";
+    if (!expected || !safeEqualText(secret, expected)) {
+      json(res, 403, { ok: false, message: "Invalid payment confirmation secret" });
+      return;
+    }
+
+    const db = await readDb();
+    const payment = db.payments.find((item) => item.id === String(data.paymentId || data.id || ""));
+    const user = creditPayment(db, payment, "Manual payment confirmation");
+    if (!payment || !user) {
+      json(res, 404, { ok: false, message: "Payment or user not found" });
+      return;
+    }
+    await writeDb(db);
+    json(res, 200, { ok: true, balance: user.balance, message: `Платеж подтвержден. Баланс ${user.login}: ${formatMoney(user.balance)}` });
+    return;
+  }
+
+  if (pathname === "/api/bans" && req.method === "GET") {
+    try {
+      json(res, 200, { ok: true, bans: await getBans() });
+    } catch (error) {
+      json(res, 502, { ok: false, message: error.message, bans: [] });
+    }
+    return;
+  }
+
+  if (pathname === "/api/server/ban-event" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const secret = String(data.secret || req.headers["x-server-secret"] || "");
+    const expected = process.env.SERVER_WEBHOOK_SECRET || ADMIN_API_KEY || "";
+    if (!expected || !safeEqualText(secret, expected)) {
+      json(res, 403, { ok: false, message: "Invalid server webhook secret" });
+      return;
+    }
+    const db = await readDb();
+    const ban = normalizeBan({ ...data, id: data.id || randomUUID(), createdAt: new Date().toISOString() });
+    db.bans = db.bans.filter((item) => String(item.id) !== ban.id);
+    db.bans.push(ban);
+    await writeDb(db);
+    json(res, 200, { ok: true, ban });
+    return;
+  }
+
+  if (pathname === "/api/unban/order" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const login = String(data.login || "").trim();
+    const banId = String(data.banId || "");
+    const price = Math.floor(Number(process.env.UNBAN_PRICE || 30000));
+    const db = await readDb();
+    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
+    const ban = (await getBans(db)).find((item) => item.id === banId);
+
+    if (!user || !ban) {
+      json(res, 404, { ok: false, message: "Пользователь или бан не найден" });
+      return;
+    }
+    if (Number(user.balance || 0) < price) {
+      json(res, 402, { ok: false, message: `Недостаточно средств для разбана. Нужно ${formatMoney(price)}, баланс ${formatMoney(user.balance)}.` });
+      return;
+    }
+
+    user.balance = Number(user.balance || 0) - price;
+    const order = {
+      id: randomUUID(),
+      login: user.login,
+      service: "paid_unban",
+      serviceName: "Платный разбан",
+      tariffName: "Разбан",
+      price,
+      banId: ban.id,
+      status: "paid-pending-server-integration",
+      createdAt: new Date().toISOString()
+    };
+    order.delivery = await issueServerUnban(ban, order);
+    order.status = order.delivery.ok ? "paid-issued" : "paid-pending-server-integration";
+    if (order.delivery.ok) db.bans = db.bans.filter((item) => String(item.id) !== ban.id);
+    db.orders.push(order);
+    await writeDb(db);
+    json(res, 200, {
+      ok: true,
+      message: order.delivery.ok
+        ? `Разбан оплачен и отправлен на сервер. Остаток: ${formatMoney(user.balance)}.`
+        : `Разбан оплачен, но автовыдача ждет настройки API/RCON. Остаток: ${formatMoney(user.balance)}.`
+    });
+    return;
+  }
+
   if (pathname === "/api/login" && req.method === "POST") {
     const data = await readRequestBody(req);
     const login = String(data.login || "").trim();
@@ -834,7 +1393,8 @@ async function handleApi(req, res, pathname) {
     }
 
     user.balance = Number(user.balance || 0) - price;
-    db.orders.push({
+    const order = {
+      id: randomUUID(),
       ...data,
       login: user.login,
       serviceName: service.name,
@@ -842,9 +1402,18 @@ async function handleApi(req, res, pathname) {
       price,
       status: "paid-pending-server-integration",
       createdAt: new Date().toISOString()
-    });
+    };
+    order.delivery = await issueServerEntitlement(order);
+    order.status = order.delivery.ok ? "paid-issued" : "paid-pending-server-integration";
+    db.orders.push(order);
     await writeDb(db);
-    json(res, 200, { ok: true, message: `Покупка сохранена, списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}. Автовыдача будет подключена после RCON/AMXX.` });
+    json(res, 200, {
+      ok: true,
+      delivery: order.delivery,
+      message: order.delivery.ok
+        ? `Покупка оплачена и отправлена на сервер. Списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}.`
+        : `Покупка оплачена, но автовыдача ждет настройки API/RCON. Списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}.`
+    });
     return;
   }
 
@@ -884,7 +1453,7 @@ function routePage(pathname) {
             <th>Разбан</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="ban-rows">
           <tr><td colspan="5" class="empty-cell">Активных банов пока нет</td></tr>
         </tbody>
       </table>`);
@@ -922,7 +1491,18 @@ const server = createServer(async (req, res) => {
         app: BRAND.name,
         domain: BRAND.domain,
         server: BRAND.serverAddress,
-        mode: "standalone"
+        mode: "standalone",
+        payments: {
+          click: Boolean(process.env.CLICK_SERVICE_ID),
+          payme: Boolean(process.env.PAYME_MERCHANT_ID)
+        },
+        delivery: {
+          adminApi: Boolean(ADMIN_API_URL),
+          rcon: Boolean(process.env.RCON_PASSWORD)
+        },
+        bans: {
+          externalApi: Boolean(process.env.BAN_API_URL)
+        }
       });
       return;
     }
