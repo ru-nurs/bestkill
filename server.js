@@ -1114,6 +1114,12 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 .footer{padding-left:max(30px,calc((100vw - 1300px)/2 + 15px));padding-right:max(30px,calc((100vw - 1300px)/2 + 15px))}
 }
 @media (max-width:900px){
+.layout,.main,.monitor,.table-wrap,.support-banner{min-width:0;max-width:100%;width:100%}
+.main{overflow:hidden}
+.table-wrap{overflow-x:auto}
+.monitor table{min-width:720px}
+.support-banner{overflow:hidden;background:linear-gradient(90deg,#050608 0%,#050608c7 52%,#05060825),url('/assets/support-banner.png?v=2') center/cover no-repeat}
+.support-banner h2,.support-banner p{max-width:100%;white-space:normal;overflow-wrap:break-word}
 .logo{padding:8px 14px;justify-content:center}
 .logo img{display:block;width:min(300px,100%);height:90px;object-fit:contain}
 }
