@@ -23,7 +23,6 @@ const BRAND = {
 };
 
 const NAV = [
-  ["/", "Главная"],
   ["/store", "Магазин"],
   ["/balance", "Баланс"],
   ["/banlist", "Баны"],
@@ -33,6 +32,31 @@ const NAV = [
   ["/chat", "Чат сервера"],
   ["/stats", "Статистика"],
   ["/demo", "Демо"]
+];
+
+const TOP_NAV = [
+  ["/", "Главная"],
+  ["/store", "Магазин"],
+  ["/rules_public", "Правила⌄"]
+];
+
+const ONLINE_USERS = [
+  { nick: "markeloff2009", role: "Пользователь", color: "#4c79aa" },
+  { nick: "topg", role: "Пользователь", color: "#9aa4af" },
+  { nick: "Kotez", role: "Модератор", color: "#00f0ff" },
+  { nick: "KPECTHA9I.MATb", role: "Админы-Сервера", color: "#ff2727" },
+  { nick: "Rick Sanchez", role: "Староста", color: "#ff544a" },
+  { nick: "квик", role: "Админы-Сервера", color: "#ff2727" },
+  { nick: "Kalorit", role: "Пользователь", color: "#4c79aa" }
+];
+
+const CHAT_MESSAGES = [
+  { nick: "Kotez", role: "Модератор", color: "#00f0ff", time: "15:42", text: "Уважаемые игроки OLDERA.UZ, начинается конкурс на сервере Oldera Zombie Server. Участвовать может каждый игрок нашего сервера." },
+  { nick: "diamond tears", role: "Пользователь", color: "#4c79aa", time: "16:12", text: "[shok] забанен на [1 неделя] с причиной [Реклама]." },
+  { nick: "Kotez", role: "Модератор", color: "#00f0ff", time: "16:56", text: "Реклама и оскорбления на проекте запрещены. За нарушение правил администрация выдает наказание." },
+  { nick: "solom", role: "Пользователь", color: "#4c79aa", time: "17:34", text: "Обожаю всех модеров" },
+  { nick: "solom", role: "Пользователь", color: "#4c79aa", time: "17:36", text: "редач редач" },
+  { nick: "markeloff2009", role: "Пользователь", color: "#4c79aa", time: "20:52", text: "нас бомбили" }
 ];
 
 const SERVICES = [
@@ -616,8 +640,8 @@ function pageShell({ title, pathName = "/", content }) {
 </head>
 <body>
   <header class="topbar">
-    <nav class="nav">${NAV.map(([href, label]) => `<a class="${active(href)}" href="${href}">${label}</a>`).join("")}</nav>
-    <button class="user-mini" data-modal="login">Войти</button>
+    <nav class="nav">${TOP_NAV.map(([href, label]) => `<a class="${active(href)}" href="${href}">${label}</a>`).join("")}</nav>
+    <button class="user-mini" data-modal="login">Войти на сайт</button>
   </header>
   <div class="crumb">Главная страница${pathName === "/" ? "" : " / " + escapeHtml(title)}</div>
   <main class="layout">
@@ -629,17 +653,20 @@ function pageShell({ title, pathName = "/", content }) {
       <div class="side-actions">
         <a href="/news" class="side-btn">★ Подписка</a>
         <a href="/clans" class="side-btn">♣ Кланы</a>
-        <a href="/giveaway" class="side-btn accent">🎁 Розыгрыш</a>
-        <a href="steam://connect/${BRAND.serverAddress}" class="side-btn">⬇ Подключиться к серверу</a>
+        <a href="/giveaway" class="side-btn accent">▣ Розыгрыш</a>
+        <a href="steam://connect/${BRAND.serverAddress}" class="side-btn">⇣ Скачать CS 1.6 от Проекта</a>
       </div>
+      ${sidebarAuthHtml()}
       <section class="panel">
         <h3>Сервер</h3>
         <a href="steam://connect/${BRAND.serverAddress}">${escapeHtml(BRAND.serverName)}</a>
         <small>${escapeHtml(BRAND.serverAddress)}</small>
       </section>
+      ${onlineUsersHtml()}
+      ${topUsersHtml()}
       <section class="panel">
         <h3>Навигация</h3>
-        ${NAV.slice(1).map(([href, label]) => `<a href="${href}">${label}</a>`).join("")}
+        ${NAV.map(([href, label]) => `<a href="${href}">${label}</a>`).join("")}
       </section>
     </aside>
     <section class="main">${content}</section>
@@ -674,6 +701,42 @@ function pageShell({ title, pathName = "/", content }) {
   <script>${clientScript()}</script>
 </body>
 </html>`;
+}
+
+function sidebarAuthHtml() {
+  return `<section class="panel auth-panel">
+    <h3>Авторизация</h3>
+    <button class="auth-button auth-red" data-modal="login">Войти на сайт</button>
+    <button class="auth-button auth-vk" data-modal="login">VK Войти через VK</button>
+    <button class="auth-button auth-outline" data-modal="register">Зарегистрироваться</button>
+  </section>`;
+}
+
+function avatarLetter(name) {
+  return escapeHtml(String(name || "?").trim().slice(0, 1).toUpperCase());
+}
+
+function onlineUsersHtml() {
+  return `<section class="panel online-panel">
+    <h3>Сейчас онлайн <span>${ONLINE_USERS.length}</span></h3>
+    <div class="online-list">
+      ${ONLINE_USERS.map((user) => `<article class="online-user" style="--user-color:${user.color}">
+        <div class="avatar">${avatarLetter(user.nick)}</div>
+        <div><b>${escapeHtml(user.nick)}</b><small>${escapeHtml(user.role)}</small></div>
+      </article>`).join("")}
+    </div>
+  </section>`;
+}
+
+function topUsersHtml() {
+  return `<section class="panel top-users">
+    <h3>Топ пользователей</h3>
+    <div class="top-list">
+      <div><b>Nursultan</b><small>Владелец проекта</small></div>
+      <div><b>Support</b><small>Администратор</small></div>
+      <div><b>Kotez</b><small>Модератор</small></div>
+    </div>
+  </section>`;
 }
 
 function serverTable() {
@@ -717,6 +780,7 @@ function homePage() {
     title: "Главная страница",
     pathName: "/",
     content: `${serverTable()}
+      ${supportBannerHtml()}
       <section class="panel">
         <div class="panel-head">
           <h2>ТОП игроки</h2>
@@ -836,6 +900,16 @@ function recentOperationsHtml() {
   </section>`;
 }
 
+function supportBannerHtml() {
+  return `<section class="support-banner">
+    <div>
+      <h2>Есть вопрос? Обратитесь к администрации.</h2>
+      <p>Если у Вас имеются вопросы, Вы можете открыть тикет в разделе поддержки и своевременно получить ответ администрации на него.</p>
+      <a href="/support">Подробнее</a>
+    </div>
+  </section>`;
+}
+
 function balancePage() {
   return pageShell({
     title: "Баланс",
@@ -916,6 +990,27 @@ function supportPage() {
     </form>`);
 }
 
+function chatPage() {
+  return pageShell({
+    title: "Чат сервера",
+    pathName: "/chat",
+    content: `<section class="panel chat-panel">
+      <h2>Чат</h2>
+      <div class="chat-list">
+        ${CHAT_MESSAGES.map((message, index) => `<article class="chat-message ${index === 0 ? "pinned" : ""}" style="--chat-color:${message.color}">
+          <div class="avatar">${avatarLetter(message.nick)}</div>
+          <div class="chat-body">
+            <b>${escapeHtml(message.nick)}</b>
+            <p>${escapeHtml(message.text)}</p>
+          </div>
+          <time>${escapeHtml(message.time)}<span>Сегодня</span></time>
+        </article>`).join("")}
+      </div>
+      <p class="chat-login"><a href="#" data-modal="login">Авторизуйтесь</a>, чтобы отправлять сообщения</p>
+    </section>`
+  });
+}
+
 function modals() {
   return `<div class="modal" id="login-modal" aria-hidden="true">
     <div class="dialog">
@@ -970,7 +1065,9 @@ body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-r
 .panel-link{display:inline-block!important;border:1px solid #33445c!important;border-radius:4px!important;padding:8px 10px!important;color:#dce7f5!important;background:#131e2d}.role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0 20px}.role-grid.compact{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.role-card{background:linear-gradient(180deg,#111b29,#0b1320);border:1px solid #2c3b50;border-left:4px solid var(--role);border-radius:6px;padding:13px;box-shadow:inset 0 0 30px #0005}.role-title{display:flex;align-items:center;gap:9px;margin-bottom:12px}.role-title span{width:12px;height:12px;border-radius:50%;background:var(--role);box-shadow:0 0 14px var(--role)}.role-title strong{color:var(--role);text-transform:uppercase;font-size:13px}.role-members{display:grid;gap:9px}.role-member{background:#0a111d;border:1px solid #253349;border-radius:5px;padding:10px}.role-member b{display:block;color:#fff}.role-member small{color:#93a3b8}.role-table{margin-top:16px}
 @media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
-@media (max-width:900px){.layout{grid-template-columns:1fr}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{padding:0 12px;white-space:nowrap}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}}
+/* BestKILL/GameCMS reference pass */
+.topbar{height:88px;justify-content:flex-start;padding:0 14px;background:#202128;border-top:6px solid #fff1e9}.nav{justify-content:flex-start}.nav a{height:86px;padding:0 24px;font-size:18px;color:#d8e5ff}.nav a.active{min-width:136px;justify-content:center;background:linear-gradient(135deg,#af69b7 0%,#ef3678 100%);border-radius:14px;color:#fff}.user-mini{right:38px;background:#111827;border:1px solid #ff1717;border-radius:0;color:#fff;padding:8px 17px}.crumb{max-width:none;margin:0;padding:19px 14px;background:#33363e;border:0;border-radius:0;color:#9ea6b3}.layout{max-width:none;margin:0;grid-template-columns:382px minmax(0,1fr);gap:38px;padding:38px 14px 24px;background:linear-gradient(90deg,#172030e8,#131b29c2),url('/assets/oldera-bg.png') center top/cover fixed no-repeat}.main{gap:52px}.logo{min-height:178px;padding:0 6px 18px;align-items:flex-end}.logo-mark{width:78px;height:78px;border-radius:16px;font-size:34px}.logo strong{font-size:52px;letter-spacing:-2px}.side-actions{gap:12px}.side-btn{min-height:50px;border-radius:7px;background:#111a2a;border-color:#182842;text-align:center;font-size:17px}.side-btn:first-child{border-color:#ff9900}.side-btn.accent{background:linear-gradient(100deg,#fa9226,#f05270)}.panel{border-radius:10px;background:#0d1724f5;border-color:#18263a}.auth-panel{padding:34px 36px}.auth-panel h3,.online-panel h3,.top-users h3{font-size:23px;color:#d6e3ff}.auth-button{width:100%;min-height:50px;margin-top:13px;border:1px solid #ff1717;background:#4a1019;color:#fff;font-weight:800;font-size:16px;cursor:pointer}.auth-red{background:#ff1111}.auth-vk{background:#580d18}.auth-outline{background:#25101a}.online-panel{padding:34px 36px}.online-panel h3{display:flex;gap:18px}.online-list,.top-list{display:grid;gap:0}.online-user{display:grid;grid-template-columns:52px 1fr;gap:12px;align-items:center;padding:12px 0;border-top:1px solid #2b3544}.avatar{width:50px;height:50px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#404b5a,#d3d8dc);color:#111827;font-weight:900}.online-user b{display:block;color:var(--user-color);font-size:18px}.online-user small{color:#d4e0f7;font-size:15px}.top-list>div{padding:13px 0;border-top:1px solid #2b3544}.top-list b{display:block;color:#d9e7ff}.top-list small{color:#9da9ba}.monitor{margin-top:0}.monitor .panel-head{display:none}.monitor th{font-size:18px}.monitor td{font-size:17px}.support-banner{min-height:315px;border-radius:0;background:linear-gradient(90deg,#050608 0%,#05060899 46%,#05060866),url('/assets/shop-service.png') center/cover no-repeat;padding:50px 70px;display:flex;align-items:center}.support-banner h2{display:inline-block;margin:0 0 24px;padding:10px 14px;border-radius:8px;background:#252936d9;color:#fff;font-size:40px;font-weight:400}.support-banner p{display:inline-block;margin:0 0 28px;padding:9px 12px;border-radius:8px;background:#252936d9;color:#cbd5e3;font-size:17px}.support-banner a{display:inline-block;background:#ff1717;color:#fff;padding:15px 28px;font-weight:900}.chat-panel{padding:38px}.chat-panel h2{font-size:24px;margin-bottom:36px}.chat-list{display:grid;gap:0}.chat-message{display:grid;grid-template-columns:64px 1fr 70px;gap:18px;padding:18px 10px;border-bottom:1px solid #2a3445}.chat-message.pinned{background:#3a3a4d;padding:16px}.chat-body b{color:var(--chat-color);font-size:16px}.chat-body p{margin:8px 0 0;color:#dbe7ff;font-size:20px;line-height:1.32}.chat-message.pinned p{color:#42ff63;font-size:16px}.chat-message time{text-align:right;color:#cfe1ff}.chat-message time span{display:block}.chat-login{text-align:center;margin:34px 0 0;color:#d8e2ef}.chat-login a{display:inline!important;border:0!important;color:#ff4a12!important;text-decoration:underline}.footer{max-width:none;background:#202128;margin:0;padding:34px 70px 52px;border-top:1px solid #30313a}
+@media (max-width:900px){.topbar{height:64px;padding:0}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{height:64px;padding:0 14px;white-space:nowrap;font-size:14px}.nav a.active{min-width:0;border-radius:0}.layout{grid-template-columns:1fr;padding:18px 12px;gap:18px}.main{order:1;gap:20px}.sidebar{order:2}.logo{min-height:96px}.logo strong{font-size:30px}.logo-mark{width:50px;height:50px}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}.support-banner{min-height:230px;padding:28px 22px}.support-banner h2{font-size:28px}.support-banner p{font-size:15px}.chat-panel{padding:22px}.chat-message{grid-template-columns:50px 1fr;gap:12px}.chat-message time{grid-column:2;text-align:left}.chat-body p{font-size:17px}.auth-panel,.online-panel{padding:24px}.footer{padding:28px 18px}}
 `;
 }
 
@@ -1619,6 +1716,7 @@ function routePage(pathname) {
   if (pathname === "/admins") return adminsPage();
   if (pathname === "/support") return supportPage();
   if (pathname === "/users") return usersPage();
+  if (pathname === "/chat") return chatPage();
   if (pathname === "/banlist" || pathname === "/bans") {
     return simplePage("Баны", pathname, `<h2>Список банов</h2>
       <p class="note">После интеграции с бан-системой сервера здесь будут отображаться реальные баны: причина, срок, сколько осталось и платный разбан.</p>
@@ -1638,8 +1736,8 @@ function routePage(pathname) {
         </tbody>
       </table>`);
   }
-  if (pathname === "/forum" || pathname === "/chat" || pathname === "/news") {
-    const title = pathname === "/forum" ? "Форум" : pathname === "/chat" ? "Чат сервера" : "Новости";
+  if (pathname === "/forum" || pathname === "/news") {
+    const title = pathname === "/forum" ? "Форум" : "Новости";
     return simplePage(title, pathname, `<h2>${title}</h2><p class="empty">Раздел пустой. Чужие сообщения и новости удалены.</p>`);
   }
   if (pathname === "/stats") {

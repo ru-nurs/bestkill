@@ -15,6 +15,7 @@ const seedPaths = [
   "/users",
   "/support",
   "/forum",
+  "/chat",
   "/stats",
   "/privacy-policy",
   "/processing-of-personal-data"
