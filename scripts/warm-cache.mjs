@@ -12,6 +12,7 @@ const seedPaths = [
   "/bans",
   "/banlist",
   "/admins",
+  "/users",
   "/support",
   "/forum",
   "/stats",

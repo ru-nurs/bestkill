@@ -28,6 +28,7 @@ const NAV = [
   ["/balance", "Баланс"],
   ["/banlist", "Баны"],
   ["/admins", "Администраторы"],
+  ["/users", "Пользователи"],
   ["/rules_public", "Правила"],
   ["/chat", "Чат сервера"],
   ["/stats", "Статистика"],
@@ -153,6 +154,65 @@ for (const service of SERVICES) {
     };
   }
 }
+
+const ROLE_GROUPS = [
+  {
+    id: "owner",
+    title: "Владелец",
+    color: "#ff355d",
+    members: [
+      { nick: "Nursultan", note: "Основатель проекта" }
+    ]
+  },
+  {
+    id: "head_admin",
+    title: "Гл. администратор",
+    color: "#ffb02e",
+    members: [
+      { nick: "Свободно", note: "Место открыто" }
+    ]
+  },
+  {
+    id: "admin",
+    title: "Администратор",
+    color: "#36d7ff",
+    members: [
+      { nick: "Support", note: "Контроль сервера" }
+    ]
+  },
+  {
+    id: "moderator",
+    title: "Модератор",
+    color: "#9b6cff",
+    members: [
+      { nick: "Свободно", note: "Порядок в чате" }
+    ]
+  },
+  {
+    id: "elder",
+    title: "Староста",
+    color: "#63e68a",
+    members: [
+      { nick: "Свободно", note: "Помощь игрокам" }
+    ]
+  },
+  {
+    id: "vip",
+    title: "VIP",
+    color: "#f14ea0",
+    members: [
+      { nick: "Пока нет", note: "Покупается в магазине" }
+    ]
+  },
+  {
+    id: "user",
+    title: "Пользователь",
+    color: "#aab7c8",
+    members: [
+      { nick: "Все игроки", note: BRAND.serverAddress }
+    ]
+  }
+];
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -666,6 +726,13 @@ function homePage() {
           ${Array.from({ length: 5 }, (_, i) => `<div class="player-card empty"><span>#${i + 1}</span><b>Свободно</b><small>Статистика пока пустая</small></div>`).join("")}
         </div>
       </section>
+      <section class="panel roles-panel">
+        <div class="panel-head">
+          <h2>Группы проекта</h2>
+          <a class="panel-link" href="/users">Все группы</a>
+        </div>
+        ${roleGroupsHtml({ compact: true })}
+      </section>
       <section class="panel two-col">
         <div>
           <h2>Новости проекта</h2>
@@ -726,6 +793,24 @@ function serviceCard(service) {
   </article>`;
 }
 
+function roleGroupsHtml({ compact = false } = {}) {
+  const groups = compact ? ROLE_GROUPS.slice(0, 5) : ROLE_GROUPS;
+  return `<div class="role-grid ${compact ? "compact" : ""}">
+    ${groups.map((group) => `<article class="role-card" style="--role:${group.color}">
+      <div class="role-title">
+        <span></span>
+        <strong>${escapeHtml(group.title)}</strong>
+      </div>
+      <div class="role-members">
+        ${group.members.map((member) => `<div class="role-member">
+          <b>${escapeHtml(member.nick)}</b>
+          <small>${escapeHtml(member.note)}</small>
+        </div>`).join("")}
+      </div>
+    </article>`).join("")}
+  </div>`;
+}
+
 function balancePage() {
   return pageShell({
     title: "Баланс",
@@ -772,10 +857,17 @@ function simplePage(title, pathName, body) {
 }
 
 function adminsPage() {
-  return simplePage("Администраторы", "/admins", `<h2>Администраторы</h2>
-    <p class="empty">Список администраторов пустой. Чужие пользователи и услуги удалены.</p>
-    <table><thead><tr><th>#</th><th>Пользователь</th><th>Идентификатор</th><th>Услуги</th></tr></thead>
-    <tbody><tr><td colspan="4" class="empty-cell">Пока нет администраторов</td></tr></tbody></table>`);
+  return simplePage("Администраторы", "/admins", `<h2>Администрация проекта</h2>
+    <p class="note">Пользователи разделены по группам, как в GameCMS: владелец, главные администраторы, администраторы, модераторы и старосты.</p>
+    ${roleGroupsHtml()}
+    <table class="role-table"><thead><tr><th>#</th><th>Пользователь</th><th>Группа</th><th>Статус</th></tr></thead>
+    <tbody>${ROLE_GROUPS.flatMap((group) => group.members.map((member) => ({ group, member }))).map((item, index) => `<tr><td>${index + 1}</td><td><b style="color:${item.group.color}">${escapeHtml(item.member.nick)}</b></td><td>${escapeHtml(item.group.title)}</td><td>${escapeHtml(item.member.note)}</td></tr>`).join("")}</tbody></table>`);
+}
+
+function usersPage() {
+  return simplePage("Пользователи", "/users", `<h2>Пользователи проекта</h2>
+    <p class="note">Группы оформлены разными цветами: владелец, гл. администратор, администратор, модератор, староста, VIP и пользователь.</p>
+    ${roleGroupsHtml()}`);
 }
 
 function rulesPage() {
@@ -850,6 +942,7 @@ body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-r
 .service-cards{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.service-card{display:block;min-height:330px;padding:0;border-radius:7px;background:#0b1422;border-color:#2d3c52;box-shadow:0 16px 32px #0008}.service-card:before{display:none}.service-preview{height:142px;background:linear-gradient(180deg,#0b142255,#0b1422),url('/assets/shop-service.png') center/cover no-repeat;border-bottom:1px solid #2d3b51;display:flex;align-items:flex-end;padding:12px}.service-preview span{background:#7b1728;border:1px solid #d33a52;border-radius:4px;padding:7px 10px;color:#fff;font-weight:900}.service-body{padding:14px}.service-card h3{font-size:19px;margin:0 0 8px}.service-card strong{color:#fff;background:#182537;border:1px solid #32455e;border-radius:4px;padding:8px 10px;margin:0 0 12px;display:inline-block}.service-card ul{padding-left:18px;color:#b8c5d7}
 .order-box{background:#0b1320;border:1px solid #28374b;border-radius:7px;padding:18px;margin-top:10px}.order-box h3{margin:0;color:#fff}.form-grid label,.stack-form{color:#cdd7e5}input,select,textarea{background:#641522;color:#fff;border:1px solid #af2b42;border-radius:2px;box-shadow:inset 0 1px 0 #ffffff10}input::placeholder,textarea::placeholder{color:#d7a7af}.primary{background:#c91524;border-radius:3px;box-shadow:0 5px 16px #0007}.primary:hover{background:#e01f31}.pay-form{border-top-color:#2d3a4d}
 .balance-panel,.two-col{gap:18px}.status-pill{border-radius:3px;background:#193423;color:#89e5a2}.modal{backdrop-filter:blur(5px)}.dialog{border-radius:7px;background:#101925;border-color:#34455b}.footer{background:#202028d9;max-width:none;margin-top:40px;padding-left:max(18px,calc((100vw - 1180px)/2 + 18px));padding-right:max(18px,calc((100vw - 1180px)/2 + 18px));border-top-color:#353441}.footer-logo{color:#f2404c!important;text-shadow:0 0 12px #ff3b4a88}
+.panel-link{display:inline-block!important;border:1px solid #33445c!important;border-radius:4px!important;padding:8px 10px!important;color:#dce7f5!important;background:#131e2d}.role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0 20px}.role-grid.compact{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.role-card{background:linear-gradient(180deg,#111b29,#0b1320);border:1px solid #2c3b50;border-left:4px solid var(--role);border-radius:6px;padding:13px;box-shadow:inset 0 0 30px #0005}.role-title{display:flex;align-items:center;gap:9px;margin-bottom:12px}.role-title span{width:12px;height:12px;border-radius:50%;background:var(--role);box-shadow:0 0 14px var(--role)}.role-title strong{color:var(--role);text-transform:uppercase;font-size:13px}.role-members{display:grid;gap:9px}.role-member{background:#0a111d;border:1px solid #253349;border-radius:5px;padding:10px}.role-member b{display:block;color:#fff}.role-member small{color:#93a3b8}.role-table{margin-top:16px}
 @media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 @media (max-width:900px){.layout{grid-template-columns:1fr}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{padding:0 12px;white-space:nowrap}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}}
@@ -1489,6 +1582,7 @@ function routePage(pathname) {
   if (pathname === "/rules_public" || pathname === "/pages/rules") return rulesPage();
   if (pathname === "/admins") return adminsPage();
   if (pathname === "/support") return supportPage();
+  if (pathname === "/users") return usersPage();
   if (pathname === "/banlist" || pathname === "/bans") {
     return simplePage("Баны", pathname, `<h2>Список банов</h2>
       <p class="note">После интеграции с бан-системой сервера здесь будут отображаться реальные баны: причина, срок, сколько осталось и платный разбан.</p>
@@ -1511,8 +1605,8 @@ function routePage(pathname) {
     const title = pathname === "/forum" ? "Форум" : pathname === "/chat" ? "Чат сервера" : "Новости";
     return simplePage(title, pathname, `<h2>${title}</h2><p class="empty">Раздел пустой. Чужие сообщения и новости удалены.</p>`);
   }
-  if (pathname === "/users" || pathname === "/stats") {
-    const title = pathname === "/users" ? "Пользователи" : "Статистика";
+  if (pathname === "/stats") {
+    const title = "Статистика";
     return simplePage(title, pathname, `<h2>${title}</h2><p class="empty">Данные появятся после подключения статистики вашего сервера.</p>`);
   }
   if (pathname === "/demo") {
