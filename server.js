@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "oldera.json");
+const PUBLIC_DIR = path.join(__dirname, "public");
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://oldera.uz";
 const ADMIN_API_URL = process.env.ADMIN_API_URL || process.env.HOSTIN_ADMIN_API_URL || "";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || process.env.HOSTIN_API_TOKEN || "";
@@ -176,6 +177,36 @@ function html(res, status, body) {
     "cache-control": "no-store"
   });
   res.end(body);
+}
+
+async function staticAsset(res, requestPath) {
+  const relative = decodeURIComponent(requestPath.replace(/^\/assets\//, ""));
+  const assetsRoot = path.join(PUBLIC_DIR, "assets");
+  const assetPath = path.normalize(path.join(assetsRoot, relative));
+  if (assetPath !== assetsRoot && !assetPath.startsWith(`${assetsRoot}${path.sep}`)) {
+    json(res, 403, { ok: false, message: "Forbidden" });
+    return true;
+  }
+
+  try {
+    const ext = path.extname(assetPath).toLowerCase();
+    const contentTypes = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webp": "image/webp",
+      ".svg": "image/svg+xml"
+    };
+    const body = await readFile(assetPath);
+    res.writeHead(200, {
+      "content-type": contentTypes[ext] || "application/octet-stream",
+      "cache-control": "public, max-age=31536000, immutable"
+    });
+    res.end(body);
+  } catch {
+    json(res, 404, { ok: false, message: "Asset not found" });
+  }
+  return true;
 }
 
 async function readDb() {
@@ -656,10 +687,18 @@ function storePage() {
       <section class="panel store">
         <h2>Покупка привилегий</h2>
         <p class="note">Покупка списывает внутренний баланс сайта. Автовыдача на CS-сервер будет подключена после доступа к RCON/AMXX или базе банов/услуг.</p>
+        <div class="shop-hero">
+          <div>
+            <h2>Магазин услуг</h2>
+            <p>Покупка прав в онлайн режиме для ${escapeHtml(BRAND.serverName)}.</p>
+          </div>
+          <span>OLDERA SHOP</span>
+        </div>
         <div class="service-cards">
           ${SERVICES.map((service) => serviceCard(service)).join("")}
         </div>
-        <form id="order-form" class="form-grid">
+        <form id="order-form" class="form-grid order-box">
+          <h3 class="wide">Оформление заказа</h3>
           <label>Сервер<select name="server"><option value="${BRAND.serverAddress}">${BRAND.serverName}</option></select></label>
           <label>Услуга<select name="service" id="service-select">${SERVICES.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select></label>
           <label>Тариф<select name="tariff" id="tariff-select"></select></label>
@@ -678,8 +717,8 @@ function serviceCard(service) {
   const detail = SERVICE_DETAILS[service.id];
   const minPrice = Math.min(...service.tariffs.map(([, price]) => price));
   return `<article class="service-card ${detail.color}">
-    <div class="service-art"><span>${escapeHtml(detail.badge)}</span></div>
-    <div>
+    <div class="service-preview"><span>${escapeHtml(detail.badge)}</span></div>
+    <div class="service-body">
       <h3>${escapeHtml(service.name)}</h3>
       <strong>от ${minPrice.toLocaleString("ru-RU")} сум</strong>
       <ul>${detail.abilities.map((ability) => `<li>${escapeHtml(ability)}</li>`).join("")}</ul>
@@ -802,6 +841,16 @@ function styles() {
 .empty-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.player-card{min-height:132px;border:1px solid #2b3b50;border-radius:8px;background:#0e1825;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.player-card span{color:#ffce48}.player-card b{margin:10px 0}.player-card small,.empty,.note,.policy{color:var(--muted);line-height:1.5}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status-pill{color:#9decc5;background:#143525;border:1px solid #26754f;border-radius:999px;padding:6px 10px;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:grid;gap:7px;color:#cbd7e7}.form-grid .wide{grid-column:1/-1}.stack-form{display:grid;gap:12px}.service-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:18px 0 24px}.service-card{display:grid;grid-template-columns:70px 1fr;gap:14px;align-items:start;background:#0c1624;border:1px solid #2f4056;border-radius:8px;padding:14px;position:relative;overflow:hidden}.service-card:before{content:"";position:absolute;inset:0;opacity:.16;background:linear-gradient(135deg,#2de2e6,#f84aa7,#ffb000);pointer-events:none}.service-card h3{margin:0 0 6px}.service-card strong{display:block;color:#fff;margin-bottom:8px}.service-card ul{margin:0;padding-left:18px;color:#b9c7d9;font-size:13px;line-height:1.55}.service-art{width:64px;height:64px;border-radius:8px;display:grid;place-items:center;background:#152033;border:1px solid #ffffff24;box-shadow:0 0 22px #000 inset}.service-art span{font-weight:900;font-size:13px;letter-spacing:.04em}.service-card.cyan .service-art{color:#55fff1;box-shadow:0 0 28px #26d6d0}.service-card.pink .service-art{color:#ff69ba;box-shadow:0 0 28px #f4469b}.service-card.gold .service-art{color:#ffe06c;box-shadow:0 0 28px #d6a72a}.service-card.green .service-art{color:#8dffa9;box-shadow:0 0 28px #27b05b}.service-card.orange .service-art{color:#ffb269;box-shadow:0 0 28px #f08b35}.balance-panel h2{margin-bottom:8px}input,select,textarea{width:100%;background:#0b1320;color:var(--text);border:1px solid #2d3d52;border-radius:6px;padding:12px}textarea{min-height:120px;resize:vertical}.primary{border:0;border-radius:7px;background:linear-gradient(135deg,#28c2e8,#f04c9c);color:white;padding:12px 18px;font-weight:800;cursor:pointer}.result{align-self:center}.success{color:#7df0a6}.error{color:#ff8998}.empty-cell{text-align:center;color:var(--muted)}.rules{line-height:1.9}
 .modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}.modal.show{display:flex}.dialog{width:min(420px,100%);background:#111a27;border:1px solid #34445a;border-radius:10px;padding:24px;position:relative}.dialog form{display:grid;gap:12px}.close{position:absolute;right:14px;top:10px;background:transparent;border:0;color:white;font-size:28px;cursor:pointer}
 .pay-form{margin-top:18px;padding-top:18px;border-top:1px solid #273444}.pay-link{display:inline-block!important;margin-top:8px;color:#7df0ff!important;border-bottom:0!important}.inline-action{border:0;border-radius:5px;background:#b99a34;color:white;padding:8px 10px;font-weight:800;cursor:pointer}
+.topbar{background:#202028cc;backdrop-filter:blur(10px);border-bottom:1px solid #353441;box-shadow:0 8px 28px #0008}.nav a{color:#c7ceda}.nav a.active,.nav a:hover{background:linear-gradient(135deg,#39b9df,#8b5fd8 52%,#e85854);border-radius:0 0 7px 7px}.user-mini{right:22px;border:1px solid #4a5262;border-radius:6px;padding:8px 14px;background:#141a24;color:#fff}
+body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-repeat;color:#d8e2ee}body:before{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(90deg,#07101de8,#0b1323b8 35%,#0b1323bf 65%,#070b12f2),linear-gradient(180deg,#0008,#07101dcc 55%,#070a10);pointer-events:none}.crumb{background:#2d333dd9;border:1px solid #3a4350;border-radius:2px;color:#9ca7b8;margin-top:0}.layout{max-width:1180px;margin-top:18px;grid-template-columns:260px minmax(0,1fr);gap:20px}.main{gap:18px}
+.logo{min-height:148px;align-items:end;justify-content:flex-start;padding:18px 6px}.logo-mark{width:58px;height:58px;border-radius:8px;background:linear-gradient(135deg,#84f0ff,#e52f42);color:#08111d;box-shadow:0 0 26px #35e2ff99}.logo strong{font-size:34px;line-height:1;color:#fff;text-shadow:0 0 10px #51eaff,2px 2px 0 #cc1e32}.side-btn{background:#101928e6;border-color:#243348;border-radius:5px;text-align:left;color:#cbd7e8}.side-btn:hover{border-color:#42e4d3;color:#fff}.side-btn.accent{background:linear-gradient(90deg,#e43c93,#ef8231)}
+.panel{background:#101925eb;border:1px solid #243245;border-radius:7px;box-shadow:0 14px 38px #0009}.panel h2,.panel h3{color:#eaf2ff}.panel a{border-bottom-color:#273447}.monitor{background:#101925f2}.monitor .panel-head{padding:14px 18px;background:#0b121d;border-radius:7px 7px 0 0}.monitor h2{font-size:16px;margin:0}.table-wrap{border-color:#2d3a4d;border-radius:0}table{background:#0b1320}th{background:#111927;color:#cbd5e3}td{background:#0d1623cc;color:#d8e2ee}th,td{border-color:#263345}.ip{color:#f3f8ff}.meter{background:#641522;border-color:#a42a3f;border-radius:3px}.total{height:28px;background:#681724;border-color:#b43449;border-radius:3px}.small-btn{border-radius:4px}.green{background:#16733c}.red{background:#8a1a2e}.gold{background:#a98925}
+.empty-grid{grid-template-columns:repeat(5,minmax(112px,1fr))}.player-card{border-radius:7px;background:linear-gradient(180deg,#101b2b,#0b1220);border-color:#2d3e57;box-shadow:inset 0 0 30px #0006}.player-card span{color:#f0c644}.player-card b{color:#f1f6ff}
+.store>h2,.store>.note{display:none}.shop-hero{min-height:210px;background:linear-gradient(90deg,#07101dfa 0%,#07101dbd 45%,#141b2a33),url('/assets/shop-service.png') center/cover no-repeat;border:1px solid #314052;border-radius:7px;margin-bottom:18px;padding:24px;display:flex;align-items:flex-end;justify-content:space-between;gap:18px;box-shadow:inset 0 -80px 100px #050910cc}.shop-hero h2{font-size:28px;margin:0 0 8px}.shop-hero p{margin:0;color:#bdc9d8}.shop-hero span{background:#671522;border:1px solid #bd3149;color:#fff;padding:10px 12px;border-radius:4px;font-weight:900}
+.service-cards{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.service-card{display:block;min-height:330px;padding:0;border-radius:7px;background:#0b1422;border-color:#2d3c52;box-shadow:0 16px 32px #0008}.service-card:before{display:none}.service-preview{height:142px;background:linear-gradient(180deg,#0b142255,#0b1422),url('/assets/shop-service.png') center/cover no-repeat;border-bottom:1px solid #2d3b51;display:flex;align-items:flex-end;padding:12px}.service-preview span{background:#7b1728;border:1px solid #d33a52;border-radius:4px;padding:7px 10px;color:#fff;font-weight:900}.service-body{padding:14px}.service-card h3{font-size:19px;margin:0 0 8px}.service-card strong{color:#fff;background:#182537;border:1px solid #32455e;border-radius:4px;padding:8px 10px;margin:0 0 12px;display:inline-block}.service-card ul{padding-left:18px;color:#b8c5d7}
+.order-box{background:#0b1320;border:1px solid #28374b;border-radius:7px;padding:18px;margin-top:10px}.order-box h3{margin:0;color:#fff}.form-grid label,.stack-form{color:#cdd7e5}input,select,textarea{background:#641522;color:#fff;border:1px solid #af2b42;border-radius:2px;box-shadow:inset 0 1px 0 #ffffff10}input::placeholder,textarea::placeholder{color:#d7a7af}.primary{background:#c91524;border-radius:3px;box-shadow:0 5px 16px #0007}.primary:hover{background:#e01f31}.pay-form{border-top-color:#2d3a4d}
+.balance-panel,.two-col{gap:18px}.status-pill{border-radius:3px;background:#193423;color:#89e5a2}.modal{backdrop-filter:blur(5px)}.dialog{border-radius:7px;background:#101925;border-color:#34455b}.footer{background:#202028d9;max-width:none;margin-top:40px;padding-left:max(18px,calc((100vw - 1180px)/2 + 18px));padding-right:max(18px,calc((100vw - 1180px)/2 + 18px));border-top-color:#353441}.footer-logo{color:#f2404c!important;text-shadow:0 0 12px #ff3b4a88}
+@media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 @media (max-width:900px){.layout{grid-template-columns:1fr}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{padding:0 12px;white-space:nowrap}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}}
 `;
@@ -1504,6 +1553,11 @@ const server = createServer(async (req, res) => {
           externalApi: Boolean(process.env.BAN_API_URL)
         }
       });
+      return;
+    }
+
+    if (url.pathname.startsWith("/assets/")) {
+      await staticAsset(res, url.pathname);
       return;
     }
 
