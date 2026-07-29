@@ -6,6 +6,7 @@ const origin = `http://localhost:${port}`;
 const seedPaths = [
   "/",
   "/store",
+  "/balance",
   "/rules_public",
   "/news",
   "/bans",

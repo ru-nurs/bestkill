@@ -19,6 +19,7 @@ const BRAND = {
 const NAV = [
   ["/", "Главная"],
   ["/store", "Магазин"],
+  ["/balance", "Баланс"],
   ["/banlist", "Баны"],
   ["/admins", "Администраторы"],
   ["/rules_public", "Правила"],
@@ -114,6 +115,39 @@ const SERVICES = [
   }
 ];
 
+const SERVICE_DETAILS = {
+  vip: {
+    badge: "VIP",
+    color: "cyan",
+    abilities: ["VIP меню", "Дополнительное здоровье", "Бонусные гранаты", "Приоритет на сервере"]
+  },
+  admin: {
+    badge: "ADM",
+    color: "pink",
+    abilities: ["Админ меню", "Кик/бан по правилам", "Контроль игроков", "Доступ к командам"]
+  },
+  immunity: {
+    badge: "IMM",
+    color: "gold",
+    abilities: ["Защита от части наказаний", "Приоритет прав", "Отдельный статус", "Подходит для постоянных игроков"]
+  },
+  prefix: {
+    badge: "TAG",
+    color: "green",
+    abilities: ["Личный префикс в чате", "Выделение ника", "Красивый стиль", "Работает вместе с VIP/Admin"]
+  }
+};
+
+for (const service of SERVICES) {
+  if (!SERVICE_DETAILS[service.id]) {
+    SERVICE_DETAILS[service.id] = {
+      badge: "SKIN",
+      color: "orange",
+      abilities: ["Модель игрока", "Яркий внешний вид", "Для Zombie сервера", "Выбор срока в магазине"]
+    };
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -141,9 +175,14 @@ function html(res, status, body) {
 
 async function readDb() {
   try {
-    return JSON.parse(await readFile(DB_FILE, "utf8"));
+    const db = JSON.parse(await readFile(DB_FILE, "utf8"));
+    db.users ||= [];
+    db.orders ||= [];
+    db.tickets ||= [];
+    db.topups ||= [];
+    return db;
   } catch {
-    return { users: [], orders: [], tickets: [] };
+    return { users: [], orders: [], tickets: [], topups: [] };
   }
 }
 
@@ -164,6 +203,21 @@ async function readRequestBody(req) {
 function splitAddress(address) {
   const [host, port = "27015"] = address.split(":");
   return { host, port: Number(port) };
+}
+
+function findService(id) {
+  return SERVICES.find((service) => service.id === id);
+}
+
+function findTariff(service, tariffName) {
+  if (!service) return null;
+  const index = Number(tariffName);
+  if (Number.isInteger(index) && service.tariffs[index]) return service.tariffs[index];
+  return service.tariffs.find(([name]) => name === tariffName);
+}
+
+function formatMoney(value) {
+  return `${Number(value || 0).toLocaleString("ru-RU")} сум`;
 }
 
 async function queryServerInfo(address) {
@@ -393,17 +447,65 @@ function storePage() {
     content: `${serverTable()}
       <section class="panel store">
         <h2>Покупка привилегий</h2>
-        <p class="note">Форма принимает заявку на покупку. Автоматическая выдача на CS-сервер требует подключения платежки и доступа к управлению сервером.</p>
+        <p class="note">Покупка списывает внутренний баланс сайта. Автовыдача на CS-сервер будет подключена после доступа к RCON/AMXX или базе банов/услуг.</p>
+        <div class="service-cards">
+          ${SERVICES.map((service) => serviceCard(service)).join("")}
+        </div>
         <form id="order-form" class="form-grid">
           <label>Сервер<select name="server"><option value="${BRAND.serverAddress}">${BRAND.serverName}</option></select></label>
           <label>Услуга<select name="service" id="service-select">${SERVICES.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select></label>
           <label>Тариф<select name="tariff" id="tariff-select"></select></label>
           <label>Тип привязки<select name="bindType"><option>Ник + пароль</option><option>STEAM ID</option><option>STEAM ID + пароль</option></select></label>
+          <label>Логин на сайте<input name="login" maxlength="30" placeholder="Ваш логин"></label>
           <label>Ник игрока<input name="nickname" maxlength="32" placeholder="Введите ник"></label>
           <label>STEAM ID<input name="steamId" maxlength="40" placeholder="STEAM_0:0:000000"></label>
           <button class="primary" type="submit">Оставить заявку</button>
           <div id="order-result" class="result"></div>
         </form>
+      </section>`
+  });
+}
+
+function serviceCard(service) {
+  const detail = SERVICE_DETAILS[service.id];
+  const minPrice = Math.min(...service.tariffs.map(([, price]) => price));
+  return `<article class="service-card ${detail.color}">
+    <div class="service-art"><span>${escapeHtml(detail.badge)}</span></div>
+    <div>
+      <h3>${escapeHtml(service.name)}</h3>
+      <strong>от ${minPrice.toLocaleString("ru-RU")} сум</strong>
+      <ul>${detail.abilities.map((ability) => `<li>${escapeHtml(ability)}</li>`).join("")}</ul>
+    </div>
+  </article>`;
+}
+
+function balancePage() {
+  return pageShell({
+    title: "Баланс",
+    pathName: "/balance",
+    content: `${serverTable()}
+      <section class="panel two-col balance-panel">
+        <div>
+          <h2>Баланс игрока</h2>
+          <p class="note">Игрок может проверить внутренний баланс по логину. Пополнение через платежку подключается отдельно.</p>
+          <form id="balance-check-form" class="stack-form">
+            <input name="login" maxlength="30" placeholder="Логин на сайте">
+            <button class="primary" type="submit">Проверить баланс</button>
+            <div id="balance-result" class="result"></div>
+          </form>
+        </div>
+        <div>
+          <h2>Ручное пополнение</h2>
+          <p class="note">Если человек оплатил вручную, админ может зачислить сумму на профиль. Для безопасности нужен ADMIN_PIN в Render Environment.</p>
+          <form id="topup-form" class="stack-form">
+            <input name="pin" type="password" placeholder="Admin PIN">
+            <input name="login" maxlength="30" placeholder="Логин игрока">
+            <input name="amount" type="number" min="1000" step="1000" placeholder="Сумма, сум">
+            <textarea name="comment" placeholder="Комментарий"></textarea>
+            <button class="primary" type="submit">Пополнить баланс</button>
+            <div id="topup-result" class="result"></div>
+          </form>
+        </div>
       </section>`
   });
 }
@@ -479,7 +581,7 @@ function styles() {
 .layout{max-width:1180px;margin:24px auto 40px;display:grid;grid-template-columns:270px 1fr;gap:24px;padding:0 18px}.sidebar{display:flex;flex-direction:column;gap:14px}.logo{min-height:118px;display:flex;align-items:center;justify-content:center;gap:12px}.logo-mark{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:#8ee6ff;color:#0e1724;font-weight:900;box-shadow:0 0 30px #36d8ff}.logo strong{font-size:34px;color:white;text-shadow:0 0 10px #38d4ff,2px 2px #b52236}.side-actions{display:grid;gap:10px}.side-btn{background:#111d2c;border:1px solid #23344b;color:#d9e7f4;padding:12px 16px;border-radius:7px;text-align:center;font-weight:700}.side-btn:hover{border-color:var(--cyan)}.side-btn.accent{background:linear-gradient(135deg,#e947a2,#f58d30);color:white}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:22px;box-shadow:0 18px 45px #0008}.panel h2,.panel h3{margin:0 0 16px}.panel a{display:block;color:#aebbd0;padding:8px 0;border-bottom:1px solid #223043}.panel small{display:block;color:var(--muted);margin-top:4px}.main{display:grid;gap:24px}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.icon-btn{background:#182336;border:1px solid #33465f;color:#dbe8f8;border-radius:7px;padding:7px 11px;cursor:pointer}
 .table-wrap{overflow:auto;border-radius:8px;border:1px solid #2d3b4e}table{width:100%;border-collapse:collapse;background:#0d1521}th,td{border-bottom:1px solid #293648;border-right:1px solid #293648;padding:12px 14px;text-align:left;font-size:14px}th{color:#c4cee0;background:#111a27}.ip{color:#eaf4ff;font-weight:800}.meter{position:relative;display:block;min-width:86px;height:30px;background:#761927;border:1px solid #b53b52;border-radius:4px;overflow:hidden;text-align:center}.meter i,.total i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--cyan),var(--cyan) 4px,#62f0e1 4px,#62f0e1 8px)}.meter b{position:absolute;inset:0;display:grid;place-items:center;font-weight:500}.actions{white-space:nowrap}.small-btn{display:inline-grid!important;place-items:center;width:34px;height:28px;margin-right:6px;border-radius:4px;border:1px solid #ffffff30}.green{background:#176b35}.red{background:#7d1c2d}.gold{background:#a88929}.total{height:32px;position:relative;background:#7d1b2b;border:1px solid #bf3a51;border-radius:5px;overflow:hidden;margin-top:10px;text-align:center}.total span{position:absolute;inset:0;display:grid;place-items:center}
-.empty-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.player-card{min-height:132px;border:1px solid #2b3b50;border-radius:8px;background:#0e1825;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.player-card span{color:#ffce48}.player-card b{margin:10px 0}.player-card small,.empty,.note,.policy{color:var(--muted);line-height:1.5}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status-pill{color:#9decc5;background:#143525;border:1px solid #26754f;border-radius:999px;padding:6px 10px;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:grid;gap:7px;color:#cbd7e7}.form-grid .wide{grid-column:1/-1}input,select,textarea{width:100%;background:#0b1320;color:var(--text);border:1px solid #2d3d52;border-radius:6px;padding:12px}textarea{min-height:120px;resize:vertical}.primary{border:0;border-radius:7px;background:linear-gradient(135deg,#28c2e8,#f04c9c);color:white;padding:12px 18px;font-weight:800;cursor:pointer}.result{align-self:center}.success{color:#7df0a6}.error{color:#ff8998}.empty-cell{text-align:center;color:var(--muted)}.rules{line-height:1.9}
+.empty-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.player-card{min-height:132px;border:1px solid #2b3b50;border-radius:8px;background:#0e1825;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.player-card span{color:#ffce48}.player-card b{margin:10px 0}.player-card small,.empty,.note,.policy{color:var(--muted);line-height:1.5}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status-pill{color:#9decc5;background:#143525;border:1px solid #26754f;border-radius:999px;padding:6px 10px;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:grid;gap:7px;color:#cbd7e7}.form-grid .wide{grid-column:1/-1}.stack-form{display:grid;gap:12px}.service-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:18px 0 24px}.service-card{display:grid;grid-template-columns:70px 1fr;gap:14px;align-items:start;background:#0c1624;border:1px solid #2f4056;border-radius:8px;padding:14px;position:relative;overflow:hidden}.service-card:before{content:"";position:absolute;inset:0;opacity:.16;background:linear-gradient(135deg,#2de2e6,#f84aa7,#ffb000);pointer-events:none}.service-card h3{margin:0 0 6px}.service-card strong{display:block;color:#fff;margin-bottom:8px}.service-card ul{margin:0;padding-left:18px;color:#b9c7d9;font-size:13px;line-height:1.55}.service-art{width:64px;height:64px;border-radius:8px;display:grid;place-items:center;background:#152033;border:1px solid #ffffff24;box-shadow:0 0 22px #000 inset}.service-art span{font-weight:900;font-size:13px;letter-spacing:.04em}.service-card.cyan .service-art{color:#55fff1;box-shadow:0 0 28px #26d6d0}.service-card.pink .service-art{color:#ff69ba;box-shadow:0 0 28px #f4469b}.service-card.gold .service-art{color:#ffe06c;box-shadow:0 0 28px #d6a72a}.service-card.green .service-art{color:#8dffa9;box-shadow:0 0 28px #27b05b}.service-card.orange .service-art{color:#ffb269;box-shadow:0 0 28px #f08b35}.balance-panel h2{margin-bottom:8px}input,select,textarea{width:100%;background:#0b1320;color:var(--text);border:1px solid #2d3d52;border-radius:6px;padding:12px}textarea{min-height:120px;resize:vertical}.primary{border:0;border-radius:7px;background:linear-gradient(135deg,#28c2e8,#f04c9c);color:white;padding:12px 18px;font-weight:800;cursor:pointer}.result{align-self:center}.success{color:#7df0a6}.error{color:#ff8998}.empty-cell{text-align:center;color:var(--muted)}.rules{line-height:1.9}
 .modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}.modal.show{display:flex}.dialog{width:min(420px,100%);background:#111a27;border:1px solid #34445a;border-radius:10px;padding:24px;position:relative}.dialog form{display:grid;gap:12px}.close{position:absolute;right:14px;top:10px;background:transparent;border:0;color:white;font-size:28px;cursor:pointer}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 @media (max-width:900px){.layout{grid-template-columns:1fr}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{padding:0 12px;white-space:nowrap}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}}
@@ -538,7 +640,7 @@ function fillTariffs() {
   const tariff = qs('#tariff-select');
   if (!service || !tariff) return;
   const selected = services.find((item) => item.id === service.value) || services[0];
-  tariff.innerHTML = selected.tariffs.map(([name, price]) => '<option value="' + name + '">' + name + ' - ' + price.toLocaleString('ru-RU') + ' сум</option>').join('');
+  tariff.innerHTML = selected.tariffs.map(([name, price], index) => '<option value="' + index + '">' + name + ' - ' + price.toLocaleString('ru-RU') + ' сум</option>').join('');
 }
 
 qs('#refresh-status')?.addEventListener('click', refreshStatus);
@@ -566,6 +668,24 @@ qs('#order-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const result = qs('#order-result');
   const data = await postJson('/api/order', formData(event.currentTarget));
+  result.className = 'result ' + (data.ok ? 'success' : 'error');
+  result.textContent = data.message;
+});
+
+qs('#balance-check-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const result = qs('#balance-result');
+  const login = new FormData(event.currentTarget).get('login');
+  const response = await fetch('/api/balance?login=' + encodeURIComponent(login || ''));
+  const data = await response.json();
+  result.className = 'result ' + (data.ok ? 'success' : 'error');
+  result.textContent = data.message;
+});
+
+qs('#topup-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const result = qs('#topup-result');
+  const data = await postJson('/api/topup', formData(event.currentTarget));
   result.className = 'result ' + (data.ok ? 'success' : 'error');
   result.textContent = data.message;
 });
@@ -608,9 +728,62 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
-    db.users.push({ login, email, password, active: false, createdAt: new Date().toISOString() });
+    db.users.push({ login, email, password, balance: 0, active: false, createdAt: new Date().toISOString() });
     await writeDb(db);
     json(res, 200, { ok: true, message: "Регистрация принята. Аккаунт создан в тестовом режиме." });
+    return;
+  }
+
+  if (pathname === "/api/balance" && req.method === "GET") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const login = String(url.searchParams.get("login") || "").trim();
+    const db = await readDb();
+    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
+    if (!user) {
+      json(res, 404, { ok: false, message: "Пользователь не найден" });
+      return;
+    }
+    json(res, 200, { ok: true, balance: user.balance || 0, message: `Баланс ${user.login}: ${formatMoney(user.balance)}` });
+    return;
+  }
+
+  if (pathname === "/api/topup" && req.method === "POST") {
+    const adminPin = process.env.ADMIN_PIN || "";
+    if (!adminPin) {
+      json(res, 503, { ok: false, message: "Сначала добавьте ADMIN_PIN в Render Environment" });
+      return;
+    }
+
+    const data = await readRequestBody(req);
+    const pin = String(data.pin || "");
+    const login = String(data.login || "").trim();
+    const amount = Math.floor(Number(data.amount || 0));
+
+    if (pin !== adminPin) {
+      json(res, 403, { ok: false, message: "Неверный Admin PIN" });
+      return;
+    }
+    if (!login || amount <= 0) {
+      json(res, 400, { ok: false, message: "Укажите логин и сумму пополнения" });
+      return;
+    }
+
+    const db = await readDb();
+    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
+    if (!user) {
+      json(res, 404, { ok: false, message: "Пользователь не найден" });
+      return;
+    }
+
+    user.balance = Number(user.balance || 0) + amount;
+    db.topups.push({
+      login: user.login,
+      amount,
+      comment: String(data.comment || ""),
+      createdAt: new Date().toISOString()
+    });
+    await writeDb(db);
+    json(res, 200, { ok: true, balance: user.balance, message: `Пополнено. Новый баланс ${user.login}: ${formatMoney(user.balance)}` });
     return;
   }
 
@@ -630,14 +803,48 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === "/api/order" && req.method === "POST") {
     const data = await readRequestBody(req);
+    const login = String(data.login || "").trim();
+    const service = findService(data.service);
+    const tariff = findTariff(service, data.tariff);
+
+    if (!login) {
+      json(res, 400, { ok: false, message: "Укажите логин на сайте" });
+      return;
+    }
+    if (!service || !tariff) {
+      json(res, 400, { ok: false, message: "Выберите корректную услугу и тариф" });
+      return;
+    }
     if (!data.nickname && !data.steamId) {
       json(res, 400, { ok: false, message: "Укажите ник или STEAM ID для привязки" });
       return;
     }
+
     const db = await readDb();
-    db.orders.push({ ...data, status: "pending-integration", createdAt: new Date().toISOString() });
+    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
+    if (!user) {
+      json(res, 404, { ok: false, message: "Пользователь с таким логином не найден" });
+      return;
+    }
+
+    const price = tariff[1];
+    if (Number(user.balance || 0) < price) {
+      json(res, 402, { ok: false, message: `Недостаточно средств. Нужно ${formatMoney(price)}, баланс ${formatMoney(user.balance)}.` });
+      return;
+    }
+
+    user.balance = Number(user.balance || 0) - price;
+    db.orders.push({
+      ...data,
+      login: user.login,
+      serviceName: service.name,
+      tariffName: tariff[0],
+      price,
+      status: "paid-pending-server-integration",
+      createdAt: new Date().toISOString()
+    });
     await writeDb(db);
-    json(res, 200, { ok: true, message: "Заявка сохранена. Автовыдача на сервер будет подключена после RCON/AMXX и платежки." });
+    json(res, 200, { ok: true, message: `Покупка сохранена, списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}. Автовыдача будет подключена после RCON/AMXX.` });
     return;
   }
 
@@ -660,6 +867,7 @@ async function handleApi(req, res, pathname) {
 function routePage(pathname) {
   if (pathname === "/") return homePage();
   if (pathname === "/store") return storePage();
+  if (pathname === "/balance") return balancePage();
   if (pathname === "/rules_public" || pathname === "/pages/rules") return rulesPage();
   if (pathname === "/admins") return adminsPage();
   if (pathname === "/support") return supportPage();
