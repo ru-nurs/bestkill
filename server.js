@@ -40,24 +40,9 @@ const TOP_NAV = [
   ["/rules_public", "Правила⌄"]
 ];
 
-const ONLINE_USERS = [
-  { nick: "markeloff2009", role: "Пользователь", color: "#4c79aa" },
-  { nick: "topg", role: "Пользователь", color: "#9aa4af" },
-  { nick: "Kotez", role: "Модератор", color: "#00f0ff" },
-  { nick: "KPECTHA9I.MATb", role: "Админы-Сервера", color: "#ff2727" },
-  { nick: "Rick Sanchez", role: "Староста", color: "#ff544a" },
-  { nick: "квик", role: "Админы-Сервера", color: "#ff2727" },
-  { nick: "Kalorit", role: "Пользователь", color: "#4c79aa" }
-];
+const ONLINE_USERS = [];
 
-const CHAT_MESSAGES = [
-  { nick: "Kotez", role: "Модератор", color: "#00f0ff", time: "15:42", text: "Уважаемые игроки OLDERA.UZ, начинается конкурс на сервере Oldera Zombie Server. Участвовать может каждый игрок нашего сервера." },
-  { nick: "diamond tears", role: "Пользователь", color: "#4c79aa", time: "16:12", text: "[shok] забанен на [1 неделя] с причиной [Реклама]." },
-  { nick: "Kotez", role: "Модератор", color: "#00f0ff", time: "16:56", text: "Реклама и оскорбления на проекте запрещены. За нарушение правил администрация выдает наказание." },
-  { nick: "solom", role: "Пользователь", color: "#4c79aa", time: "17:34", text: "Обожаю всех модеров" },
-  { nick: "solom", role: "Пользователь", color: "#4c79aa", time: "17:36", text: "редач редач" },
-  { nick: "markeloff2009", role: "Пользователь", color: "#4c79aa", time: "20:52", text: "нас бомбили" }
-];
+const CHAT_MESSAGES = [];
 
 const SERVICES = [
   {
@@ -184,57 +169,43 @@ const ROLE_GROUPS = [
     id: "owner",
     title: "Владелец",
     color: "#ff355d",
-    members: [
-      { nick: "Nursultan", note: "Основатель проекта" }
-    ]
+    members: []
   },
   {
     id: "head_admin",
     title: "Гл. администратор",
     color: "#ffb02e",
-    members: [
-      { nick: "Свободно", note: "Место открыто" }
-    ]
+    members: []
   },
   {
     id: "admin",
     title: "Администратор",
     color: "#36d7ff",
-    members: [
-      { nick: "Support", note: "Контроль сервера" }
-    ]
+    members: []
   },
   {
     id: "moderator",
     title: "Модератор",
     color: "#9b6cff",
-    members: [
-      { nick: "Свободно", note: "Порядок в чате" }
-    ]
+    members: []
   },
   {
     id: "elder",
     title: "Староста",
     color: "#63e68a",
-    members: [
-      { nick: "Свободно", note: "Помощь игрокам" }
-    ]
+    members: []
   },
   {
     id: "vip",
     title: "VIP",
     color: "#f14ea0",
-    members: [
-      { nick: "Пока нет", note: "Покупается в магазине" }
-    ]
+    members: []
   },
   {
     id: "user",
     title: "Пользователь",
     color: "#aab7c8",
-    members: [
-      { nick: "Все игроки", note: BRAND.serverAddress }
-    ]
+    members: []
   }
 ];
 
@@ -719,10 +690,10 @@ function onlineUsersHtml() {
   return `<section class="panel online-panel">
     <h3>Сейчас онлайн <span>${ONLINE_USERS.length}</span></h3>
     <div class="online-list">
-      ${ONLINE_USERS.map((user) => `<article class="online-user" style="--user-color:${user.color}">
+      ${ONLINE_USERS.length ? ONLINE_USERS.map((user) => `<article class="online-user" style="--user-color:${user.color}">
         <div class="avatar">${avatarLetter(user.nick)}</div>
         <div><b>${escapeHtml(user.nick)}</b><small>${escapeHtml(user.role)}</small></div>
-      </article>`).join("")}
+      </article>`).join("") : `<p class="empty">Пока никого нет.</p>`}
     </div>
   </section>`;
 }
@@ -730,11 +701,7 @@ function onlineUsersHtml() {
 function topUsersHtml() {
   return `<section class="panel top-users">
     <h3>Топ пользователей</h3>
-    <div class="top-list">
-      <div><b>Nursultan</b><small>Владелец проекта</small></div>
-      <div><b>Support</b><small>Администратор</small></div>
-      <div><b>Kotez</b><small>Модератор</small></div>
-    </div>
+    <div class="top-list"><p class="empty">Пока никого нет.</p></div>
   </section>`;
 }
 
@@ -872,7 +839,7 @@ function roleGroupsHtml({ compact = false } = {}) {
         ${group.members.map((member) => `<div class="role-member">
           <b>${escapeHtml(member.nick)}</b>
           <small>${escapeHtml(member.note)}</small>
-        </div>`).join("")}
+        </div>`).join("") || `<p class="empty">Список пуст.</p>`}
       </div>
     </article>`).join("")}
   </div>`;
@@ -955,16 +922,17 @@ function simplePage(title, pathName, body) {
 }
 
 function adminsPage() {
+  const rows = ROLE_GROUPS.flatMap((group) => group.members.map((member) => ({ group, member })));
   return simplePage("Администраторы", "/admins", `<h2>Администрация проекта</h2>
-    <p class="note">Пользователи разделены по группам, как в GameCMS: владелец, главные администраторы, администраторы, модераторы и старосты.</p>
+    <p class="note">Список администрации пока пуст.</p>
     ${roleGroupsHtml()}
     <table class="role-table"><thead><tr><th>#</th><th>Пользователь</th><th>Группа</th><th>Статус</th></tr></thead>
-    <tbody>${ROLE_GROUPS.flatMap((group) => group.members.map((member) => ({ group, member }))).map((item, index) => `<tr><td>${index + 1}</td><td><b style="color:${item.group.color}">${escapeHtml(item.member.nick)}</b></td><td>${escapeHtml(item.group.title)}</td><td>${escapeHtml(item.member.note)}</td></tr>`).join("")}</tbody></table>`);
+    <tbody>${rows.length ? rows.map((item, index) => `<tr><td>${index + 1}</td><td><b style="color:${item.group.color}">${escapeHtml(item.member.nick)}</b></td><td>${escapeHtml(item.group.title)}</td><td>${escapeHtml(item.member.note)}</td></tr>`).join("") : `<tr><td colspan="4" class="empty-cell">Пользователей пока нет.</td></tr>`}</tbody></table>`);
 }
 
 function usersPage() {
   return simplePage("Пользователи", "/users", `<h2>Пользователи проекта</h2>
-    <p class="note">Группы оформлены разными цветами: владелец, гл. администратор, администратор, модератор, староста, VIP и пользователь.</p>
+    <p class="note">Пользователей пока нет. Новые аккаунты появятся после регистрации.</p>
     ${roleGroupsHtml()}`);
 }
 
@@ -996,14 +964,14 @@ function chatPage() {
     content: `<section class="panel chat-panel">
       <h2>Чат</h2>
       <div class="chat-list">
-        ${CHAT_MESSAGES.map((message, index) => `<article class="chat-message ${index === 0 ? "pinned" : ""}" style="--chat-color:${message.color}">
+        ${CHAT_MESSAGES.length ? CHAT_MESSAGES.map((message, index) => `<article class="chat-message ${index === 0 ? "pinned" : ""}" style="--chat-color:${message.color}">
           <div class="avatar">${avatarLetter(message.nick)}</div>
           <div class="chat-body">
             <b>${escapeHtml(message.nick)}</b>
             <p>${escapeHtml(message.text)}</p>
           </div>
           <time>${escapeHtml(message.time)}<span>Сегодня</span></time>
-        </article>`).join("")}
+        </article>`).join("") : `<p class="empty">Сообщений пока нет.</p>`}
       </div>
       <p class="chat-login"><a href="#" data-modal="login">Авторизуйтесь</a>, чтобы отправлять сообщения</p>
     </section>`
