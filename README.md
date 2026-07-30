@@ -12,7 +12,12 @@ node server.js
 
 ## Оплата и автовыдача
 
-Сайт готов к рабочей схеме: платежка подтверждает пополнение баланса, покупка списывает баланс и отправляет выдачу на сервер.
+Сайт поддерживает ручной перевод на карту с автоматической выдачей после проверки:
+
+1. Покупатель выбирает услугу и видит реквизиты.
+2. После перевода он прикладывает чек.
+3. Владелец открывает `/admin/orders` и нажимает «Подтвердить и выдать».
+4. Сайт отправляет команду выдачи через Admin API или RCON.
 
 ### Render Environment
 
@@ -20,6 +25,16 @@ node server.js
 PUBLIC_BASE_URL=https://oldera.uz
 ADMIN_PIN=секрет_для_ручного_пополнения
 PAYMENT_WEBHOOK_SECRET=секрет_для_ручного_подтверждения_платежей
+
+# Ручной перевод на карту
+PAYMENT_CARD_NUMBER=8600123412341234
+PAYMENT_CARD_HOLDER=ИМЯ ПОЛУЧАТЕЛЯ
+PAYMENT_CARD_TYPE=UZCARD
+PAYMENT_SUPPORT_URL=https://t.me/username
+
+# Постоянное хранение данных на Render
+SUPABASE_URL=https://project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=секретный_service_role_key
 
 # Click
 CLICK_SERVICE_ID=ваш_service_id
@@ -95,3 +110,15 @@ npm run check
 ```text
 ADMIN_PIN=любой_секретный_код
 ```
+
+Этот же PIN открывает панель проверки переводов:
+
+```text
+https://oldera.uz/admin/orders
+```
+
+## Supabase
+
+Выполни содержимое `supabase.sql` в Supabase SQL Editor, затем добавь
+`SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY` в Render Environment. Ключ
+`service_role` нельзя добавлять в браузерный код или GitHub.

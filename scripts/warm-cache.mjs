@@ -7,6 +7,7 @@ const seedPaths = [
   "/",
   "/store",
   "/balance",
+  "/admin/orders",
   "/rules_public",
   "/news",
   "/bans",

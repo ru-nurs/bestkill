@@ -14,6 +14,17 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERN
 const ADMIN_API_URL = process.env.ADMIN_API_URL || process.env.HOSTIN_ADMIN_API_URL || "";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || process.env.HOSTIN_API_TOKEN || "";
 const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || "";
+const PAYMENT_CARD_NUMBER = String(process.env.PAYMENT_CARD_NUMBER || "").trim();
+const PAYMENT_CARD_DIGITS = PAYMENT_CARD_NUMBER.replace(/[^\d]/g, "");
+const PAYMENT_CARD_HOLDER = String(process.env.PAYMENT_CARD_HOLDER || "").trim();
+const PAYMENT_CARD_TYPE = String(process.env.PAYMENT_CARD_TYPE || "UZCARD / HUMO").trim();
+const PAYMENT_SUPPORT_URL = String(process.env.PAYMENT_SUPPORT_URL || "").trim();
+const MANUAL_PAYMENT_CONFIGURED = PAYMENT_CARD_DIGITS.length >= 12
+  && PAYMENT_CARD_DIGITS.length <= 19
+  && Boolean(PAYMENT_CARD_HOLDER);
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
+const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
 
 const BRAND = {
   name: "OLDERA.UZ",
@@ -278,29 +289,79 @@ async function staticAsset(res, requestPath) {
   return true;
 }
 
+function normalizeDb(db = {}) {
+  db.users ||= [];
+  db.orders ||= [];
+  db.tickets ||= [];
+  db.topups ||= [];
+  db.payments ||= [];
+  db.bans ||= [];
+  return db;
+}
+
+function emptyDb() {
+  return normalizeDb({});
+}
+
+function supabaseHeaders() {
+  return {
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    "content-type": "application/json"
+  };
+}
+
 async function readDb() {
+  if (SUPABASE_CONFIGURED) {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?id=eq.oldera&select=data&limit=1`, {
+      headers: supabaseHeaders()
+    });
+    if (!response.ok) throw new Error(`Supabase read failed with HTTP ${response.status}`);
+    const rows = await response.json();
+    return normalizeDb(rows[0]?.data || {});
+  }
+
   try {
-    const db = JSON.parse(await readFile(DB_FILE, "utf8"));
-    db.users ||= [];
-    db.orders ||= [];
-    db.tickets ||= [];
-    db.topups ||= [];
-    db.payments ||= [];
-    db.bans ||= [];
-    return db;
+    return normalizeDb(JSON.parse(await readFile(DB_FILE, "utf8")));
   } catch {
-    return { users: [], orders: [], tickets: [], topups: [], payments: [], bans: [] };
+    return emptyDb();
   }
 }
 
 async function writeDb(db) {
+  if (SUPABASE_CONFIGURED) {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?on_conflict=id`, {
+      method: "POST",
+      headers: {
+        ...supabaseHeaders(),
+        prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify({
+        id: "oldera",
+        data: normalizeDb(db),
+        updated_at: new Date().toISOString()
+      })
+    });
+    if (!response.ok) throw new Error(`Supabase write failed with HTTP ${response.status}`);
+    return;
+  }
+
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(DB_FILE, JSON.stringify(db, null, 2));
 }
 
 async function readRequestBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 2_200_000) {
+      const error = new Error("Размер запроса превышает 2,2 МБ");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   const type = req.headers["content-type"] || "";
   if (type.includes("application/json")) return JSON.parse(raw || "{}");
@@ -335,6 +396,32 @@ function safeEqualText(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function hasValidAdminPin(req, data = {}) {
+  const expected = String(process.env.ADMIN_PIN || "");
+  const provided = String(data.pin || data.secret || req.headers["x-admin-pin"] || "");
+  return Boolean(expected) && safeEqualText(provided, expected);
+}
+
+function validReceiptData(value) {
+  const receipt = String(value || "");
+  return receipt.length >= 100
+    && receipt.length <= 1_600_000
+    && /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=\s]+$/i.test(receipt);
+}
+
+function publicCardNumber() {
+  return PAYMENT_CARD_DIGITS.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+}
+
+function publicSupportUrl() {
+  try {
+    const url = new URL(PAYMENT_SUPPORT_URL);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function parseJsonEnv(name, fallback = {}) {
@@ -454,10 +541,11 @@ async function sendRconCommand(command) {
 
 async function issueServerEntitlement(order) {
   const command = createIssueCommand(order);
+  const { receiptData, ...deliveryOrder } = order;
   const payload = {
     action: "issue_service",
     server: BRAND.serverAddress,
-    order,
+    order: deliveryOrder,
     command
   };
 
@@ -803,6 +891,8 @@ function storePage() {
   const initialService = SERVICES[0];
   const initialDetail = SERVICE_DETAILS[initialService.id];
   const initialImage = initialDetail.image || "/assets/shop-service.png?v=2";
+  const cardNumber = publicCardNumber();
+  const supportUrl = publicSupportUrl();
   return pageShell({
     title: "Магазин",
     pathName: "/store",
@@ -828,8 +918,27 @@ function storePage() {
               <label>Ник игрока<input name="nickname" maxlength="32" placeholder="Введите ник"></label>
               <label>STEAM ID<input name="steamId" maxlength="40" placeholder="STEAM_0:0:000000"></label>
             </div>
+            <section class="manual-payment-box ${MANUAL_PAYMENT_CONFIGURED ? "" : "not-configured"}">
+              <span class="payment-step">Оплата переводом</span>
+              ${MANUAL_PAYMENT_CONFIGURED ? `
+                <p>Переведите точную сумму на карту, затем прикрепите чек. Услуга будет выдана автоматически после проверки администратором.</p>
+                <div class="card-requisites">
+                  <div><small>${escapeHtml(PAYMENT_CARD_TYPE)}</small><strong id="payment-card-number">${escapeHtml(cardNumber)}</strong></div>
+                  <button type="button" class="copy-card" id="copy-card" title="Скопировать номер карты">⧉</button>
+                </div>
+                <div class="card-holder"><span>Получатель</span><b>${escapeHtml(PAYMENT_CARD_HOLDER)}</b></div>
+                ${supportUrl ? `<a class="payment-support" href="${escapeHtml(supportUrl)}" target="_blank" rel="noopener">Вопрос по переводу — написать поддержке</a>` : ""}
+              ` : `
+                <p>Реквизиты ещё не настроены. Администратору нужно добавить номер карты в Render Environment.</p>
+              `}
+            </section>
+            <div class="buyer-fields payment-proof-fields">
+              <label>Имя отправителя<input name="payerName" maxlength="80" placeholder="Как указано при переводе" ${MANUAL_PAYMENT_CONFIGURED ? "required" : "disabled"}></label>
+              <label>Номер или время операции<input name="transactionId" maxlength="100" placeholder="Например: 20:54 или ID перевода" ${MANUAL_PAYMENT_CONFIGURED ? "required" : "disabled"}></label>
+              <label>Чек об оплате<input name="receipt" id="receipt-input" type="file" accept="image/jpeg,image/png,image/webp" ${MANUAL_PAYMENT_CONFIGURED ? "required" : "disabled"}></label>
+            </div>
             <label class="check-row"><input type="checkbox" required checked> <span>Я принимаю условия оферты и правила проекта</span></label>
-            <button class="primary purchase-submit" type="submit">Оформить услугу</button>
+            <button class="primary purchase-submit" type="submit" ${MANUAL_PAYMENT_CONFIGURED ? "" : "disabled"}>Я перевёл — отправить на проверку</button>
             <div id="order-result" class="result"></div>
           </form>
           <article class="service-info" id="service-info">
@@ -847,6 +956,35 @@ function storePage() {
           </article>
         </div>
       </section>`
+  });
+}
+
+function adminOrdersPage() {
+  return pageShell({
+    title: "Проверка заказов",
+    pathName: "/admin/orders",
+    content: `<section class="panel admin-orders-page">
+      <div class="admin-orders-head">
+        <div>
+          <span>Админ-панель</span>
+          <h2>Проверка переводов</h2>
+          <p class="note">Сверьте сумму и чек. После подтверждения сайт сам отправит выдачу на игровой сервер.</p>
+        </div>
+        <button class="icon-btn" id="admin-logout" type="button" hidden>Выйти</button>
+      </div>
+      <form id="admin-orders-login" class="admin-login">
+        <label>Admin PIN<input name="pin" type="password" autocomplete="current-password" required placeholder="Введите секретный PIN"></label>
+        <button class="primary" type="submit">Открыть заказы</button>
+        <div id="admin-login-result" class="result"></div>
+      </form>
+      <div id="admin-orders-workspace" hidden>
+        <div class="admin-toolbar">
+          <strong id="pending-count">Ожидают проверки: 0</strong>
+          <button class="icon-btn" id="refresh-admin-orders" type="button">↻ Обновить</button>
+        </div>
+        <div id="admin-orders-list" class="admin-orders-list"></div>
+      </div>
+    </section>`
   });
 }
 
@@ -1107,7 +1245,7 @@ function modals() {
 function styles() {
   return `
 :root{color-scheme:dark;--bg:#10151f;--panel:#121b27e8;--panel2:#0d1521;--line:#273444;--text:#dce7f5;--muted:#8d9bb0;--cyan:#42e4d3;--pink:#f4469b;--orange:#f08b35;--red:#8e1e30;--green:#27984c;--gold:#b99a34}
-*{box-sizing:border-box}body{margin:0;background:#0b1019;color:var(--text);font-family:Arial,Helvetica,sans-serif;min-height:100vh;background-image:radial-gradient(circle at 50% 0,#2a3547 0,#111827 38%,#090d14 100%)}a{color:inherit;text-decoration:none}button,input,select,textarea{font:inherit}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#0b1019;color:var(--text);font-family:Arial,Helvetica,sans-serif;min-height:100vh;background-image:radial-gradient(circle at 50% 0,#2a3547 0,#111827 38%,#090d14 100%)}a{color:inherit;text-decoration:none}button,input,select,textarea{font:inherit}
 .topbar{height:56px;background:#24232d;display:flex;justify-content:center;align-items:center;position:sticky;top:0;z-index:5;border-bottom:1px solid #343443}.nav{display:flex;gap:4px;height:100%}.nav a{display:flex;align-items:center;padding:0 20px;color:#bac4d4;font-weight:700;font-size:13px;text-transform:uppercase}.nav a.active,.nav a:hover{background:linear-gradient(135deg,#25b9dc,#f1549a);color:white;border-radius:0 0 8px 8px}.user-mini{position:absolute;right:28px;background:transparent;border:0;color:#c9d5e5;cursor:pointer}.crumb{max-width:1180px;margin:0 auto;padding:14px 18px;background:#303641;color:#aab4c4;font-size:13px}
 .layout{max-width:1180px;margin:24px auto 40px;display:grid;grid-template-columns:270px 1fr;gap:24px;padding:0 18px}.sidebar{display:flex;flex-direction:column;gap:14px}.logo{min-height:118px;display:flex;align-items:center;justify-content:center;gap:12px}.logo-mark{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:#8ee6ff;color:#0e1724;font-weight:900;box-shadow:0 0 30px #36d8ff}.logo strong{font-size:34px;color:white;text-shadow:0 0 10px #38d4ff,2px 2px #b52236}.side-actions{display:grid;gap:10px}.side-btn{background:#111d2c;border:1px solid #23344b;color:#d9e7f4;padding:12px 16px;border-radius:7px;text-align:center;font-weight:700}.side-btn:hover{border-color:var(--cyan)}.side-btn.accent{background:linear-gradient(135deg,#e947a2,#f58d30);color:white}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:22px;box-shadow:0 18px 45px #0008}.panel h2,.panel h3{margin:0 0 16px}.panel a{display:block;color:#aebbd0;padding:8px 0;border-bottom:1px solid #223043}.panel small{display:block;color:var(--muted);margin-top:4px}.main{display:grid;gap:24px}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.icon-btn{background:#182336;border:1px solid #33465f;color:#dbe8f8;border-radius:7px;padding:7px 11px;cursor:pointer}
@@ -1128,6 +1266,8 @@ body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-r
 .rules-page{display:grid;gap:22px}.rules-hero{min-height:220px;padding:38px 42px;border:1px solid #26394d;border-radius:10px;background:linear-gradient(110deg,#0b1727fa,#0b1727b8 58%,#0b172744),url('/assets/support-banner.png?v=2') center/cover no-repeat;box-shadow:inset 0 0 70px #0008}.rules-hero span{display:inline-block;color:#9bdcff;font-size:13px;font-weight:900;text-transform:uppercase}.rules-hero h1{max-width:680px;margin:17px 0 10px;color:#9ddb23;font-size:36px;line-height:1.08}.rules-hero p{max-width:610px;margin:0;color:#c5d0df;font-size:18px;line-height:1.5}.rules-server-title{margin:10px 0 0;color:#9ddb23;font-size:30px;line-height:1.2}.rule-section{--rule-tone:#52cfff;background:#0c1522f5;border:1px solid #26374a;border-left:5px solid var(--rule-tone);border-radius:10px;padding:30px 34px;box-shadow:0 18px 45px #0007}.rule-section.vip{--rule-tone:#ffda20}.rule-section.admin{--rule-tone:#71f3a2}.rule-section.required{--rule-tone:#ff4b5f;background:#211116f5}.rule-section>h2{margin:0 0 22px;color:#f0f5ff;font-size:30px}.rule-list{display:grid}.rule-row{display:grid;grid-template-columns:82px minmax(0,1fr);gap:24px;padding:22px 8px;border-top:1px solid #233246}.rule-row:first-child{border-top:0}.rule-row>b{color:#73d9ff;font-size:19px}.rule-row h3{margin:0 0 7px;color:#f2f6fc;font-size:18px}.rule-row p{margin:0;color:#bdc8d8;font-size:16px;line-height:1.58}.rule-row small{display:block;margin-top:10px;color:#d6deea;font-size:14px;line-height:1.5}.rule-row small strong{color:var(--rule-tone)}
 .home-promo{height:315px;min-height:315px;padding:38px 56px;display:flex;align-items:flex-start;background-position:center;background-size:cover;background-repeat:no-repeat;overflow:hidden}.home-promo.store{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 45%,#05060842),url('/assets/support-banner.png?v=2')}.home-promo.unban{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 45%,#05060842),url('/assets/shop-service.png?v=2')}.home-promo.support{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 50%,#05060866),url('/assets/oldera-bg.png?v=2')}.home-promo h2{display:inline-block;max-width:800px;margin:0 0 20px;padding:9px 11px;border-radius:7px;background:#252936df;color:#fff;font-size:32px;font-weight:400;line-height:1.15}.home-promo p{display:block;max-width:790px;margin:0 0 24px;padding:8px 10px;border-radius:7px;background:#252936df;color:#cbd5e3;font-size:14px;line-height:1.45}.home-promo a{display:inline-block;background:#ff1717;color:#fff;padding:12px 25px;font-weight:900}.home-chat{min-height:250px}.home-news{min-height:180px;padding:30px}
 .purchase-panel{padding:30px}.purchase-panel>h2{display:block;margin:0 0 28px;color:#dce7f5;font-size:18px}.purchase-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(340px,1fr);gap:30px;align-items:start}.purchase-form{display:grid;gap:14px}.purchase-form label{display:grid;gap:7px;color:#c8d3e2;font-weight:700}.purchase-form select,.purchase-form input{height:42px;padding:9px 13px;background:#5d1420;border:1px solid #bb1f35;color:#fff}.buyer-fields{display:grid;gap:12px;padding-top:4px}.purchase-form .check-row{display:flex;align-items:center;font-weight:400}.purchase-submit{min-height:56px;background:#58b8ac;box-shadow:0 0 24px #58d7c177}.service-info>h3{margin:0 0 8px;color:#cbd6e6;font-size:16px}.service-info{min-width:0}.service-info-media{height:300px;position:relative;overflow:hidden;border:1px solid #2f4158;background:#101928}.service-info-media:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 40%,#08111de8)}.service-info-media img{display:block;width:100%;height:100%;object-fit:cover;object-position:center 25%}.service-info-media span{position:absolute;left:18px;bottom:16px;z-index:1;padding:8px 11px;background:#7b1728;border:1px solid #d33a52;color:#fff;font-weight:900}.service-info-body{padding:20px;background:#0b1422;border:1px solid #2f4158;border-top:0}.service-info-body h4{margin:0 0 10px;color:#fff;font-size:24px}.service-info-body>strong{display:inline-block;margin-bottom:12px;padding:8px 10px;background:#182537;border:1px solid #32455e;color:#fff}.service-info-body ul{margin:0 0 16px;padding-left:20px;color:#bdc9d9;line-height:1.7}.service-info-body small{color:#8292a7}
+.manual-payment-box{padding:16px;background:#101d2c;border:1px solid #31506a;border-radius:5px}.manual-payment-box.not-configured{border-color:#8b2736;background:#251018}.manual-payment-box p{margin:8px 0 14px;color:#afbed0;font-size:13px;line-height:1.5}.payment-step{color:#64e3d3;font-size:12px;font-weight:900;text-transform:uppercase}.card-requisites{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px;background:#08111d;border:1px solid #273b50}.card-requisites small{display:block;margin:0 0 4px;color:#8797aa}.card-requisites strong{display:block;color:#fff;font-size:20px;letter-spacing:0;word-spacing:4px}.copy-card{width:40px;height:40px;flex:0 0 40px;background:#182b3d;border:1px solid #3d5a72;color:#fff;cursor:pointer}.card-holder{display:flex;justify-content:space-between;gap:16px;margin-top:10px;color:#98a8bb;font-size:13px}.card-holder b{color:#e4edf8;text-align:right}.payment-support{margin-top:10px!important;padding:8px 0 0!important;border-bottom:0!important;color:#63dfd1!important;font-size:13px}.payment-proof-fields input[type=file]{height:auto;padding:9px}.purchase-submit:disabled{cursor:not-allowed;filter:grayscale(1);opacity:.55}
+.admin-orders-page{min-height:460px}.admin-orders-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.admin-orders-head span{display:block;margin-bottom:7px;color:#57ddcf;font-size:12px;font-weight:900;text-transform:uppercase}.admin-orders-head h2{margin-bottom:7px}.admin-login{display:grid;grid-template-columns:minmax(220px,390px) 190px;align-items:end;gap:12px;max-width:620px;margin-top:26px}.admin-login label{display:grid;gap:7px;color:#c9d5e4;font-weight:700}.admin-login .result{grid-column:1/-1}.admin-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:28px 0 16px;padding-top:20px;border-top:1px solid #27384c}.admin-orders-list{display:grid;gap:14px}.admin-order{display:grid;grid-template-columns:170px minmax(0,1fr);gap:18px;padding:16px;background:#09121e;border:1px solid #28394d;border-left:4px solid #e6a628}.admin-order[data-status="paid-issued"]{border-left-color:#32c875}.admin-order[data-status="rejected"]{border-left-color:#df4054}.admin-receipt{width:170px;height:190px;display:block;object-fit:contain;background:#050a11;border:1px solid #26374a;cursor:zoom-in}.admin-order-main{min-width:0}.admin-order-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.admin-order-title h3{margin:0 0 5px;color:#f1f6fd}.order-status{display:inline-block;padding:5px 8px;background:#302512;border:1px solid #6d5220;color:#ffd477;font-size:12px;white-space:nowrap}.order-status.paid-issued{background:#123021;border-color:#246a45;color:#7cf0aa}.order-status.rejected{background:#34131a;border-color:#7a2937;color:#ff96a5}.admin-order-price{display:block;margin:12px 0;color:#fff;font-size:22px}.admin-order-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 18px;color:#9faec0;font-size:13px}.admin-order-meta b{color:#dce7f4}.admin-order-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}.approve-order,.reject-order,.retry-order{border:0;padding:9px 13px;color:#fff;font-weight:800;cursor:pointer}.approve-order{background:#249858}.reject-order{background:#9b2638}.retry-order{background:#9b7926}.admin-empty{padding:42px 20px;text-align:center;color:#8999ad;border:1px dashed #31445a}
 .rules-page{gap:26px;padding:30px;background:#0b1421e8;border-radius:10px}.rules-hero{min-height:115px;padding:28px 30px;background:#111d2e;border:1px solid #24364b;border-radius:14px;box-shadow:inset 0 0 42px #07101d}.rules-hero h1{margin:0 0 6px;color:#8bad16;font-size:27px;font-weight:400}.rules-hero p{margin:0;color:#8f9bad;font-size:14px}.rules-server-title{margin:6px 0 0;color:#8bad16;font-size:27px;font-weight:400}.rule-section{--rule-tone:#51c8f2;padding:24px;background:#080f1a;border:1px solid #1c293a;border-left:0;border-radius:14px;box-shadow:inset 0 0 35px #03070d}.rule-section.vip,.rule-section.admin{--rule-tone:#51c8f2}.rule-section.required{--rule-tone:#ff5768;background:#160c10;border-left:0}.rule-section>h2{margin:0 0 18px;color:#c8d0df;font-size:26px;font-weight:600}.rule-list{gap:10px}.rule-row{grid-template-columns:50px minmax(0,1fr);gap:12px;padding:14px;background:#0c1623;border:0;border-radius:8px}.rule-row>b{color:#62c8ef;font-size:14px}.rule-row h3{margin:0 0 4px;color:#c8d0df;font-size:15px}.rule-row p{color:#8996a8;font-size:14px;line-height:1.48}.rule-row small{margin-top:4px;color:#8996a8;font-size:13px}.rule-row small strong{color:#aab7c7}
 @media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
@@ -1196,7 +1336,7 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 .main{gap:30px}
 }
 @media (max-width:900px){
-.home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}
+.home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.card-requisites strong{font-size:17px}.admin-login{grid-template-columns:1fr}.admin-order{grid-template-columns:1fr}.admin-receipt{width:100%;height:250px}.admin-order-title{display:grid}.admin-order-meta{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}
 }
 `;
 }
@@ -1223,13 +1363,14 @@ qsa('[data-close], .modal').forEach((element) => element.addEventListener('click
   if (event.target === element) qsa('.modal').forEach((modal) => modal.classList.remove('show'));
 }));
 
-async function postJson(url, data) {
+async function postJson(url, data, headers = {}) {
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(data)
   });
-  return response.json();
+  const payload = await response.json();
+  return { ...payload, httpStatus: response.status };
 }
 
 function formData(form) {
@@ -1240,6 +1381,40 @@ function escapeText(value) {
   const div = document.createElement('div');
   div.textContent = value == null ? '' : String(value);
   return div.innerHTML;
+}
+
+function receiptDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      reject(new Error('Прикрепите изображение чека'));
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      reject(new Error('Файл слишком большой. Максимум 8 МБ'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать чек'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('Не удалось открыть изображение чека'));
+      image.onload = () => {
+        const scale = Math.min(1, 1200 / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        const result = canvas.toDataURL('image/jpeg', 0.72);
+        if (result.length > 1600000) {
+          reject(new Error('После обработки чек всё ещё слишком большой'));
+          return;
+        }
+        resolve(result);
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 async function refreshStatus() {
@@ -1309,9 +1484,36 @@ qs('#login-form')?.addEventListener('submit', async (event) => {
 qs('#order-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const result = qs('#order-result');
-  const data = await postJson('/api/order', formData(event.currentTarget));
-  result.className = 'result ' + (data.ok ? 'success' : 'error');
-  result.textContent = data.message;
+  const button = qs('.purchase-submit', event.currentTarget);
+  try {
+    button && (button.disabled = true);
+    result.className = 'result';
+    result.textContent = 'Подготавливаем чек...';
+    const payload = formData(event.currentTarget);
+    const receipt = qs('#receipt-input')?.files?.[0];
+    delete payload.receipt;
+    payload.receiptData = await receiptDataUrl(receipt);
+    const data = await postJson('/api/order', payload);
+    result.className = 'result ' + (data.ok ? 'success' : 'error');
+    result.textContent = data.message;
+    if (data.ok) {
+      event.currentTarget.reset();
+      fillTariffs();
+    }
+  } catch (error) {
+    result.className = 'result error';
+    result.textContent = error.message;
+  } finally {
+    button && (button.disabled = false);
+  }
+});
+
+qs('#copy-card')?.addEventListener('click', async () => {
+  const number = qs('#payment-card-number')?.textContent || '';
+  await navigator.clipboard.writeText(number.replace(/\s/g, ''));
+  const button = qs('#copy-card');
+  button.textContent = '✓';
+  setTimeout(() => { button.textContent = '⧉'; }, 1400);
 });
 
 qs('#balance-check-form')?.addEventListener('submit', async (event) => {
@@ -1341,6 +1543,105 @@ qs('#payment-form')?.addEventListener('submit', async (event) => {
     ? data.message + '<a class="pay-link" href="' + data.paymentUrl + '" target="_blank" rel="noopener">Перейти к оплате</a>'
     : data.message;
 });
+
+const adminStatusLabels = {
+  'pending-payment-review': 'Ожидает проверки',
+  'payment-confirming': 'Выполняется выдача',
+  'paid-issued': 'Оплачен и выдан',
+  'paid-pending-server-integration': 'Оплачен, выдача ожидает',
+  rejected: 'Отклонён'
+};
+
+function adminPin() {
+  try { return sessionStorage.getItem('olderaAdminPin') || ''; } catch { return ''; }
+}
+
+function renderAdminOrders(orders) {
+  const list = qs('#admin-orders-list');
+  if (!list) return;
+  const pending = orders.filter((order) => order.status === 'pending-payment-review').length;
+  qs('#pending-count').textContent = 'Ожидают проверки: ' + pending;
+  if (!orders.length) {
+    list.innerHTML = '<div class="admin-empty">Заказов пока нет</div>';
+    return;
+  }
+  list.innerHTML = orders.map((order) => {
+    const status = adminStatusLabels[order.status] || order.status;
+    const canApprove = order.status === 'pending-payment-review';
+    const canRetry = order.status === 'paid-pending-server-integration';
+    const created = new Date(order.createdAt).toLocaleString('ru-RU');
+    const receipt = order.receiptData
+      ? '<a href="' + order.receiptData + '" target="_blank" rel="noopener"><img class="admin-receipt" src="' + order.receiptData + '" alt="Чек заказа"></a>'
+      : '<div class="admin-receipt"></div>';
+    return '<article class="admin-order" data-status="' + escapeText(order.status) + '">' +
+      receipt +
+      '<div class="admin-order-main">' +
+        '<div class="admin-order-title"><div><h3>' + escapeText(order.serviceName) + '</h3><small>' + escapeText(order.id) + '</small></div>' +
+        '<span class="order-status ' + escapeText(order.status) + '">' + escapeText(status) + '</span></div>' +
+        '<strong class="admin-order-price">' + Number(order.price || 0).toLocaleString('ru-RU') + ' сум</strong>' +
+        '<div class="admin-order-meta">' +
+          '<span>Создан: <b>' + escapeText(created) + '</b></span>' +
+          '<span>Тариф: <b>' + escapeText(order.tariffName) + '</b></span>' +
+          '<span>Логин: <b>' + escapeText(order.login) + '</b></span>' +
+          '<span>Игрок: <b>' + escapeText(order.steamId || order.nickname) + '</b></span>' +
+          '<span>Отправитель: <b>' + escapeText(order.payerName) + '</b></span>' +
+          '<span>Операция: <b>' + escapeText(order.transactionId) + '</b></span>' +
+        '</div>' +
+        (order.delivery?.message ? '<p class="note">Выдача: ' + escapeText(order.delivery.message) + '</p>' : '') +
+        '<div class="admin-order-actions">' +
+          (canApprove ? '<button class="approve-order" data-order-action="confirm" data-order-id="' + escapeText(order.id) + '">Подтвердить и выдать</button><button class="reject-order" data-order-action="reject" data-order-id="' + escapeText(order.id) + '">Отклонить</button>' : '') +
+          (canRetry ? '<button class="retry-order" data-order-action="retry" data-order-id="' + escapeText(order.id) + '">Повторить выдачу</button>' : '') +
+        '</div>' +
+      '</div>' +
+    '</article>';
+  }).join('');
+}
+
+async function loadAdminOrders() {
+  const pin = adminPin();
+  if (!pin) return;
+  const data = await postJson('/api/admin/orders/list', {}, { 'x-admin-pin': pin });
+  const result = qs('#admin-login-result');
+  if (!data.ok) {
+    result.className = 'result error';
+    result.textContent = data.message;
+    return;
+  }
+  result.textContent = '';
+  qs('#admin-orders-login').hidden = true;
+  qs('#admin-orders-workspace').hidden = false;
+  qs('#admin-logout').hidden = false;
+  renderAdminOrders(data.orders || []);
+}
+
+qs('#admin-orders-login')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const pin = new FormData(event.currentTarget).get('pin') || '';
+  try { sessionStorage.setItem('olderaAdminPin', pin); } catch {}
+  await loadAdminOrders();
+});
+
+qs('#refresh-admin-orders')?.addEventListener('click', loadAdminOrders);
+qs('#admin-logout')?.addEventListener('click', () => {
+  try { sessionStorage.removeItem('olderaAdminPin'); } catch {}
+  location.reload();
+});
+
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-order-action]');
+  if (!button) return;
+  const action = button.dataset.orderAction;
+  if (action === 'reject' && !confirm('Отклонить этот перевод?')) return;
+  button.disabled = true;
+  const data = await postJson('/api/admin/orders/action', {
+    orderId: button.dataset.orderId,
+    action
+  }, { 'x-admin-pin': adminPin() });
+  alert(data.message);
+  await loadAdminOrders();
+});
+
+if (qs('#admin-orders-workspace') && adminPin()) loadAdminOrders();
 
 async function loadBans() {
   const tbody = qs('#ban-rows');
@@ -1704,6 +2005,73 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (pathname === "/api/admin/orders/list" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    if (!hasValidAdminPin(req, data)) {
+      json(res, 403, { ok: false, message: "Неверный Admin PIN" });
+      return;
+    }
+    const db = await readDb();
+    const orders = db.orders
+      .filter((order) => order.paymentMethod === "manual-card")
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    json(res, 200, { ok: true, orders });
+    return;
+  }
+
+  if (pathname === "/api/admin/orders/action" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    if (!hasValidAdminPin(req, data)) {
+      json(res, 403, { ok: false, message: "Неверный Admin PIN" });
+      return;
+    }
+
+    const action = String(data.action || "");
+    const db = await readDb();
+    const order = db.orders.find((item) => item.id === String(data.orderId || "") && item.paymentMethod === "manual-card");
+    if (!order) {
+      json(res, 404, { ok: false, message: "Заказ не найден" });
+      return;
+    }
+
+    if (action === "reject") {
+      if (order.status !== "pending-payment-review") {
+        json(res, 409, { ok: false, message: "Этот заказ уже обработан" });
+        return;
+      }
+      order.status = "rejected";
+      order.reviewedAt = new Date().toISOString();
+      await writeDb(db);
+      json(res, 200, { ok: true, message: "Заказ отклонён. Услуга не выдавалась." });
+      return;
+    }
+
+    const canIssue = action === "confirm" && order.status === "pending-payment-review";
+    const canRetry = action === "retry" && order.status === "paid-pending-server-integration";
+    if (!canIssue && !canRetry) {
+      json(res, 409, { ok: false, message: "Этот заказ уже обработан или действие недоступно" });
+      return;
+    }
+
+    order.status = "payment-confirming";
+    order.reviewedAt ||= new Date().toISOString();
+    order.deliveryStartedAt = new Date().toISOString();
+    await writeDb(db);
+
+    order.delivery = await issueServerEntitlement(order);
+    order.deliveryFinishedAt = new Date().toISOString();
+    order.status = order.delivery.ok ? "paid-issued" : "paid-pending-server-integration";
+    await writeDb(db);
+    json(res, 200, {
+      ok: true,
+      delivery: order.delivery,
+      message: order.delivery.ok
+        ? "Платёж подтверждён, услуга автоматически выдана на сервере."
+        : `Платёж подтверждён, но сервер не принял выдачу: ${order.delivery.message}`
+    });
+    return;
+  }
+
   if (pathname === "/api/bans" && req.method === "GET") {
     try {
       json(res, 200, { ok: true, bans: await getBans() });
@@ -1806,6 +2174,18 @@ async function handleApi(req, res, pathname) {
       json(res, 400, { ok: false, message: "Укажите ник или STEAM ID для привязки" });
       return;
     }
+    if (!MANUAL_PAYMENT_CONFIGURED) {
+      json(res, 503, { ok: false, message: "Реквизиты для перевода ещё не настроены" });
+      return;
+    }
+    if (!String(data.payerName || "").trim() || !String(data.transactionId || "").trim()) {
+      json(res, 400, { ok: false, message: "Укажите отправителя и номер операции" });
+      return;
+    }
+    if (!validReceiptData(data.receiptData)) {
+      json(res, 400, { ok: false, message: "Прикрепите корректное изображение чека размером до 1,6 МБ" });
+      return;
+    }
 
     const db = await readDb();
     const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase());
@@ -1815,32 +2195,46 @@ async function handleApi(req, res, pathname) {
     }
 
     const price = tariff[1];
-    if (Number(user.balance || 0) < price) {
-      json(res, 402, { ok: false, message: `Недостаточно средств. Нужно ${formatMoney(price)}, баланс ${formatMoney(user.balance)}.` });
+    const transactionId = String(data.transactionId).trim();
+    const payerName = String(data.payerName).trim();
+    const receiptData = String(data.receiptData);
+    const receiptHash = createHash("sha256").update(receiptData).digest("hex");
+    const duplicate = db.orders.find((item) => item.paymentMethod === "manual-card"
+      && item.status !== "rejected"
+      && (item.receiptHash === receiptHash
+        || (String(item.transactionId || "").toLowerCase() === transactionId.toLowerCase()
+          && String(item.payerName || "").toLowerCase() === payerName.toLowerCase()
+          && Number(item.price) === Number(price))));
+    if (duplicate) {
+      json(res, 409, { ok: false, message: "Заказ с таким номером операции уже создан" });
       return;
     }
 
-    user.balance = Number(user.balance || 0) - price;
     const order = {
       id: randomUUID(),
-      ...data,
+      server: BRAND.serverAddress,
       login: user.login,
+      nickname: String(data.nickname || "").trim(),
+      steamId: String(data.steamId || "").trim(),
+      bindType: String(data.bindType || ""),
+      service: service.id,
       serviceName: service.name,
       tariffName: tariff[0],
       price,
-      status: "paid-pending-server-integration",
+      paymentMethod: "manual-card",
+      payerName,
+      transactionId,
+      receiptData,
+      receiptHash,
+      status: "pending-payment-review",
       createdAt: new Date().toISOString()
     };
-    order.delivery = await issueServerEntitlement(order);
-    order.status = order.delivery.ok ? "paid-issued" : "paid-pending-server-integration";
     db.orders.push(order);
     await writeDb(db);
     json(res, 200, {
       ok: true,
-      delivery: order.delivery,
-      message: order.delivery.ok
-        ? `Покупка оплачена и отправлена на сервер. Списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}.`
-        : `Покупка оплачена, но автовыдача ждет настройки API/RCON. Списано ${formatMoney(price)}. Остаток: ${formatMoney(user.balance)}.`
+      orderId: order.id,
+      message: `Заказ создан на ${formatMoney(price)}. Администратор проверит перевод, после подтверждения услуга выдастся автоматически.`
     });
     return;
   }
@@ -1865,6 +2259,7 @@ function routePage(pathname) {
   if (pathname === "/") return homePage();
   if (pathname === "/store") return storePage();
   if (pathname === "/balance") return balancePage();
+  if (pathname === "/admin/orders") return adminOrdersPage();
   if (pathname === "/rules_public" || pathname === "/pages/rules") return rulesPage();
   if (pathname === "/admins") return adminsPage();
   if (pathname === "/support") return supportPage();
@@ -1925,8 +2320,10 @@ const server = createServer(async (req, res) => {
         mode: "standalone",
         payments: {
           click: Boolean(process.env.CLICK_SERVICE_ID),
-          payme: Boolean(process.env.PAYME_MERCHANT_ID)
+          payme: Boolean(process.env.PAYME_MERCHANT_ID),
+          manualCard: MANUAL_PAYMENT_CONFIGURED
         },
+        persistence: SUPABASE_CONFIGURED ? "supabase" : "local-file",
         delivery: {
           adminApi: Boolean(ADMIN_API_URL),
           rcon: Boolean(process.env.RCON_PASSWORD)
@@ -1960,8 +2357,13 @@ const server = createServer(async (req, res) => {
       content: `<section class="panel"><h2>404</h2><p class="empty">Такой страницы пока нет на ${escapeHtml(BRAND.name)}.</p></section>`
     }));
   } catch (error) {
-    res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-    res.end(error.stack || error.message);
+    const status = Number(error.statusCode || 500);
+    if (String(req.url || "").startsWith("/api/")) {
+      json(res, status, { ok: false, message: status === 500 ? "Внутренняя ошибка сервера" : error.message });
+      return;
+    }
+    res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+    res.end(status === 500 ? "Внутренняя ошибка сервера" : error.message);
   }
 });
 
