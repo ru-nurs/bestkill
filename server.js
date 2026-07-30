@@ -641,11 +641,6 @@ function pageShell({ title, pathName = "/", content }) {
         <a href="steam://connect/${BRAND.serverAddress}" class="side-btn">⇣ Скачать CS 1.6 от Проекта</a>
       </div>
       ${sidebarAuthHtml()}
-      <section class="panel">
-        <h3>Сервер</h3>
-        <a href="steam://connect/${BRAND.serverAddress}">${escapeHtml(BRAND.serverName)}</a>
-        <small>${escapeHtml(BRAND.serverAddress)}</small>
-      </section>
       ${onlineUsersHtml()}
       ${topUsersHtml()}
       <section class="panel">
@@ -760,70 +755,97 @@ function homePage() {
     title: "Главная страница",
     pathName: "/",
     content: `${serverTable()}
-      ${supportBannerHtml()}
-      <section class="panel">
-        <div class="panel-head">
-          <h2>ТОП игроки</h2>
-          <span class="status-pill">данные будут подключены позже</span>
-        </div>
-        <div class="empty-grid">
-          ${Array.from({ length: 5 }, (_, i) => `<div class="player-card empty"><span>#${i + 1}</span><b>Свободно</b><small>Статистика пока пустая</small></div>`).join("")}
-        </div>
-      </section>
-      <section class="panel roles-panel">
-        <div class="panel-head">
-          <h2>Группы проекта</h2>
-          <a class="panel-link" href="/users">Все группы</a>
-        </div>
-        ${roleGroupsHtml({ compact: true })}
-      </section>
-      ${recentOperationsHtml()}
-      <section class="panel two-col">
-        <div>
-          <h2>Новости проекта</h2>
-          <p class="empty">Новостей пока нет. Здесь будут объявления ${escapeHtml(BRAND.name)}.</p>
-        </div>
-        <div>
-          <h2>Чат сервера</h2>
-          <p class="empty">Чат пустой. Сообщения чужого проекта здесь не отображаются.</p>
-        </div>
+      ${homePromoHtml({
+        type: "store",
+        title: "Магазин - продажа услуг в онлайн режиме.",
+        text: `В магазине можно выбрать привилегию или модель и оформить её для сервера ${BRAND.serverName}.`,
+        href: "/store"
+      })}
+      ${homeChatHtml()}
+      ${homePromoHtml({
+        type: "unban",
+        title: "Забанили, но Вы считаете себя невиновным?",
+        text: "Проверьте активные блокировки и отправьте обращение администрации проекта.",
+        href: "/banlist"
+      })}
+      ${homePromoHtml({
+        type: "support",
+        title: "Есть вопрос? Обратитесь к администрации.",
+        text: "Откройте тикет в разделе поддержки и получите ответ администрации OLDERA.UZ.",
+        href: "/support"
+      })}
+      <section class="panel home-news">
+        <h2>Новости проекта</h2>
+        <p class="empty">Новостей пока нет. Первые объявления ${escapeHtml(BRAND.name)} появятся здесь.</p>
       </section>`
   });
 }
 
+function homePromoHtml({ type, title, text, href }) {
+  return `<section class="home-promo ${type}">
+    <div>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(text)}</p>
+      <a href="${escapeHtml(href)}">Подробнее</a>
+    </div>
+  </section>`;
+}
+
+function homeChatHtml() {
+  return `<section class="panel chat-panel home-chat">
+    <h2>Чат</h2>
+    <div class="chat-list"><p class="empty">Сообщений пока нет.</p></div>
+    <p class="chat-login"><a href="#" data-modal="login">Авторизуйтесь</a>, чтобы отправлять сообщения</p>
+  </section>`;
+}
+
 function storePage() {
+  const initialService = SERVICES[0];
+  const initialDetail = SERVICE_DETAILS[initialService.id];
+  const initialImage = initialDetail.image || "/assets/shop-service.png?v=2";
   return pageShell({
     title: "Магазин",
     pathName: "/store",
     content: `${serverTable()}
-      <section class="panel store">
+      <section class="panel store purchase-panel">
         <h2>Покупка привилегий</h2>
-        <p class="note">Покупка списывает внутренний баланс сайта. Автовыдача на CS-сервер будет подключена после доступа к RCON/AMXX или базе банов/услуг.</p>
-        <div class="shop-hero">
-          <div>
-            <h2>Магазин услуг</h2>
-            <p>Покупка прав в онлайн режиме для ${escapeHtml(BRAND.serverName)}.</p>
-          </div>
-          <span>OLDERA SHOP</span>
+        <div class="purchase-layout">
+          <form id="order-form" class="purchase-form">
+            <label>Выберите сервер
+              <select name="server"><option value="${BRAND.serverAddress}">${escapeHtml(BRAND.serverName)}</option></select>
+            </label>
+            <label>Выберите услугу
+              <select name="service" id="service-select">${SERVICES.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select>
+            </label>
+            <label>Выберите тариф
+              <select name="tariff" id="tariff-select"></select>
+            </label>
+            <label>Выберите тип привязки
+              <select name="bindType"><option>Ник + пароль</option><option>STEAM ID</option><option>STEAM ID + пароль</option></select>
+            </label>
+            <div class="buyer-fields">
+              <label>Логин на сайте<input name="login" maxlength="30" placeholder="Ваш логин"></label>
+              <label>Ник игрока<input name="nickname" maxlength="32" placeholder="Введите ник"></label>
+              <label>STEAM ID<input name="steamId" maxlength="40" placeholder="STEAM_0:0:000000"></label>
+            </div>
+            <label class="check-row"><input type="checkbox" required checked> <span>Я принимаю условия оферты и правила проекта</span></label>
+            <button class="primary purchase-submit" type="submit">Оформить услугу</button>
+            <div id="order-result" class="result"></div>
+          </form>
+          <article class="service-info" id="service-info">
+            <h3>Информация об услуге</h3>
+            <div class="service-info-media">
+              <img id="service-info-image" src="${escapeHtml(initialImage)}" alt="${escapeHtml(initialService.name)}">
+              <span id="service-info-badge">${escapeHtml(initialDetail.badge)}</span>
+            </div>
+            <div class="service-info-body">
+              <h4 id="service-info-title">${escapeHtml(initialService.name)}</h4>
+              <strong id="service-info-price">${initialService.tariffs[0][1].toLocaleString("ru-RU")} сум</strong>
+              <ul id="service-info-abilities">${initialDetail.abilities.map((ability) => `<li>${escapeHtml(ability)}</li>`).join("")}</ul>
+              <small>Сервер: ${escapeHtml(BRAND.serverAddress)}</small>
+            </div>
+          </article>
         </div>
-        <div class="service-cards">
-          ${SERVICES.map((service) => serviceCard(service)).join("")}
-        </div>
-        <form id="order-form" class="form-grid order-box">
-          <h3 class="wide">Оформление заказа</h3>
-          <label>Сервер<select name="server"><option value="${BRAND.serverAddress}">${BRAND.serverName}</option></select></label>
-          <label>Услуга<select name="service" id="service-select">${SERVICES.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select></label>
-          <label>Тариф<select name="tariff" id="tariff-select"></select></label>
-          <label>Тип привязки<select name="bindType"><option>Ник + пароль</option><option>STEAM ID</option><option>STEAM ID + пароль</option></select></label>
-          <label>Логин на сайте<input name="login" maxlength="30" placeholder="Ваш логин"></label>
-          <label>Ник игрока<input name="nickname" maxlength="32" placeholder="Введите ник"></label>
-          <label>STEAM ID<input name="steamId" maxlength="40" placeholder="STEAM_0:0:000000"></label>
-          <label class="wide check-row"><input type="checkbox" required checked> <span>Я принимаю условия публичной оферты</span></label>
-          <label class="wide check-row"><input type="checkbox" required checked> <span>Я ознакомлен с политикой обработки персональных данных</span></label>
-          <label class="wide check-row"><input type="checkbox" required checked> <span>После оплаты услуга будет выдана автоматически на сервер ${escapeHtml(BRAND.serverAddress)}</span></label>
-          <button class="primary" type="submit">Оставить заявку</button>
-          <div id="order-result" class="result"></div>
-        </form>
       </section>`
   });
 }
@@ -1005,17 +1027,16 @@ function rulesPage() {
   return pageShell({
     title: "Правила",
     pathName: "/rules_public",
-    content: `<section class="rules-page">
+    content: `${serverTable()}<section class="rules-page">
       <header class="rules-hero">
-        <span>OLDERA.UZ · ZOMBIE SERVER</span>
         <h1>Правила проекта ${escapeHtml(BRAND.name)}</h1>
-        <p>Обязательны к ознакомлению для всех игроков и владельцев платных услуг.</p>
+        <p>Обязательны к ознакомлению для всех игроков</p>
       </header>
       <h2 class="rules-server-title">Правила сервера ${escapeHtml(BRAND.serverName)}</h2>
-      ${ruleSection("Основные правила «Для всех»", "basic", commonRules)}
+      ${ruleSection("Правила для игроков", "basic", commonRules)}
       ${ruleSection("Правила для VIP-игроков", "vip", vipRules)}
-      ${ruleSection("Правила для администраторов", "admin", adminRules)}
-      ${ruleSection("Обязательно!", "required", requiredRules)}
+      ${ruleSection("Правила для администрации", "admin", adminRules)}
+      ${ruleSection("Для пользователей услуг навсегда", "required", requiredRules)}
     </section>`
   });
 }
@@ -1105,6 +1126,9 @@ body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-r
 .balance-panel,.two-col{gap:18px}.status-pill{border-radius:3px;background:#193423;color:#89e5a2}.modal{backdrop-filter:blur(5px)}.dialog{border-radius:7px;background:#101925;border-color:#34455b}.footer{background:#202028d9;max-width:none;margin-top:40px;padding-left:max(18px,calc((100vw - 1180px)/2 + 18px));padding-right:max(18px,calc((100vw - 1180px)/2 + 18px));border-top-color:#353441}.footer-logo{color:#f2404c!important;text-shadow:0 0 12px #ff3b4a88}
 .panel-link{display:inline-block!important;border:1px solid #33445c!important;border-radius:4px!important;padding:8px 10px!important;color:#dce7f5!important;background:#131e2d}.role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0 20px}.role-grid.compact{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.role-card{background:linear-gradient(180deg,#111b29,#0b1320);border:1px solid #2c3b50;border-left:4px solid var(--role);border-radius:6px;padding:13px;box-shadow:inset 0 0 30px #0005}.role-title{display:flex;align-items:center;gap:9px;margin-bottom:12px}.role-title span{width:12px;height:12px;border-radius:50%;background:var(--role);box-shadow:0 0 14px var(--role)}.role-title strong{color:var(--role);text-transform:uppercase;font-size:13px}.role-members{display:grid;gap:9px}.role-member{background:#0a111d;border:1px solid #253349;border-radius:5px;padding:10px}.role-member b{display:block;color:#fff}.role-member small{color:#93a3b8}.role-table{margin-top:16px}
 .rules-page{display:grid;gap:22px}.rules-hero{min-height:220px;padding:38px 42px;border:1px solid #26394d;border-radius:10px;background:linear-gradient(110deg,#0b1727fa,#0b1727b8 58%,#0b172744),url('/assets/support-banner.png?v=2') center/cover no-repeat;box-shadow:inset 0 0 70px #0008}.rules-hero span{display:inline-block;color:#9bdcff;font-size:13px;font-weight:900;text-transform:uppercase}.rules-hero h1{max-width:680px;margin:17px 0 10px;color:#9ddb23;font-size:36px;line-height:1.08}.rules-hero p{max-width:610px;margin:0;color:#c5d0df;font-size:18px;line-height:1.5}.rules-server-title{margin:10px 0 0;color:#9ddb23;font-size:30px;line-height:1.2}.rule-section{--rule-tone:#52cfff;background:#0c1522f5;border:1px solid #26374a;border-left:5px solid var(--rule-tone);border-radius:10px;padding:30px 34px;box-shadow:0 18px 45px #0007}.rule-section.vip{--rule-tone:#ffda20}.rule-section.admin{--rule-tone:#71f3a2}.rule-section.required{--rule-tone:#ff4b5f;background:#211116f5}.rule-section>h2{margin:0 0 22px;color:#f0f5ff;font-size:30px}.rule-list{display:grid}.rule-row{display:grid;grid-template-columns:82px minmax(0,1fr);gap:24px;padding:22px 8px;border-top:1px solid #233246}.rule-row:first-child{border-top:0}.rule-row>b{color:#73d9ff;font-size:19px}.rule-row h3{margin:0 0 7px;color:#f2f6fc;font-size:18px}.rule-row p{margin:0;color:#bdc8d8;font-size:16px;line-height:1.58}.rule-row small{display:block;margin-top:10px;color:#d6deea;font-size:14px;line-height:1.5}.rule-row small strong{color:var(--rule-tone)}
+.home-promo{height:315px;min-height:315px;padding:38px 56px;display:flex;align-items:flex-start;background-position:center;background-size:cover;background-repeat:no-repeat;overflow:hidden}.home-promo.store{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 45%,#05060842),url('/assets/support-banner.png?v=2')}.home-promo.unban{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 45%,#05060842),url('/assets/shop-service.png?v=2')}.home-promo.support{background-image:linear-gradient(90deg,#050608f2 0%,#050608bd 50%,#05060866),url('/assets/oldera-bg.png?v=2')}.home-promo h2{display:inline-block;max-width:800px;margin:0 0 20px;padding:9px 11px;border-radius:7px;background:#252936df;color:#fff;font-size:32px;font-weight:400;line-height:1.15}.home-promo p{display:block;max-width:790px;margin:0 0 24px;padding:8px 10px;border-radius:7px;background:#252936df;color:#cbd5e3;font-size:14px;line-height:1.45}.home-promo a{display:inline-block;background:#ff1717;color:#fff;padding:12px 25px;font-weight:900}.home-chat{min-height:250px}.home-news{min-height:180px;padding:30px}
+.purchase-panel{padding:30px}.purchase-panel>h2{display:block;margin:0 0 28px;color:#dce7f5;font-size:18px}.purchase-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(340px,1fr);gap:30px;align-items:start}.purchase-form{display:grid;gap:14px}.purchase-form label{display:grid;gap:7px;color:#c8d3e2;font-weight:700}.purchase-form select,.purchase-form input{height:42px;padding:9px 13px;background:#5d1420;border:1px solid #bb1f35;color:#fff}.buyer-fields{display:grid;gap:12px;padding-top:4px}.purchase-form .check-row{display:flex;align-items:center;font-weight:400}.purchase-submit{min-height:56px;background:#58b8ac;box-shadow:0 0 24px #58d7c177}.service-info>h3{margin:0 0 8px;color:#cbd6e6;font-size:16px}.service-info{min-width:0}.service-info-media{height:300px;position:relative;overflow:hidden;border:1px solid #2f4158;background:#101928}.service-info-media:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 40%,#08111de8)}.service-info-media img{display:block;width:100%;height:100%;object-fit:cover;object-position:center 25%}.service-info-media span{position:absolute;left:18px;bottom:16px;z-index:1;padding:8px 11px;background:#7b1728;border:1px solid #d33a52;color:#fff;font-weight:900}.service-info-body{padding:20px;background:#0b1422;border:1px solid #2f4158;border-top:0}.service-info-body h4{margin:0 0 10px;color:#fff;font-size:24px}.service-info-body>strong{display:inline-block;margin-bottom:12px;padding:8px 10px;background:#182537;border:1px solid #32455e;color:#fff}.service-info-body ul{margin:0 0 16px;padding-left:20px;color:#bdc9d9;line-height:1.7}.service-info-body small{color:#8292a7}
+.rules-page{gap:26px;padding:30px;background:#0b1421e8;border-radius:10px}.rules-hero{min-height:115px;padding:28px 30px;background:#111d2e;border:1px solid #24364b;border-radius:14px;box-shadow:inset 0 0 42px #07101d}.rules-hero h1{margin:0 0 6px;color:#8bad16;font-size:27px;font-weight:400}.rules-hero p{margin:0;color:#8f9bad;font-size:14px}.rules-server-title{margin:6px 0 0;color:#8bad16;font-size:27px;font-weight:400}.rule-section{--rule-tone:#51c8f2;padding:24px;background:#080f1a;border:1px solid #1c293a;border-left:0;border-radius:14px;box-shadow:inset 0 0 35px #03070d}.rule-section.vip,.rule-section.admin{--rule-tone:#51c8f2}.rule-section.required{--rule-tone:#ff5768;background:#160c10;border-left:0}.rule-section>h2{margin:0 0 18px;color:#c8d0df;font-size:26px;font-weight:600}.rule-list{gap:10px}.rule-row{grid-template-columns:50px minmax(0,1fr);gap:12px;padding:14px;background:#0c1623;border:0;border-radius:8px}.rule-row>b{color:#62c8ef;font-size:14px}.rule-row h3{margin:0 0 4px;color:#c8d0df;font-size:15px}.rule-row p{color:#8996a8;font-size:14px;line-height:1.48}.rule-row small{margin-top:4px;color:#8996a8;font-size:13px}.rule-row small strong{color:#aab7c7}
 @media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 /* BestKILL/GameCMS reference pass */
@@ -1166,12 +1190,21 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 .logo{padding:8px 14px;justify-content:center}
 .logo img{display:block;width:min(300px,100%);height:90px;object-fit:contain}
 }
+@media (min-width:901px){
+.monitor{height:auto;min-height:0}
+.monitor .total{position:relative;left:auto;right:auto;top:auto;bottom:auto;margin:6px 5px 0}
+.main{gap:30px}
+}
+@media (max-width:900px){
+.home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}
+}
 `;
 }
 
 function clientScript() {
   return `
 const services = ${JSON.stringify(SERVICES)};
+const serviceDetails = ${JSON.stringify(SERVICE_DETAILS)};
 
 function qs(selector, root = document) { return root.querySelector(selector); }
 function qsa(selector, root = document) { return Array.from(root.querySelectorAll(selector)); }
@@ -1228,10 +1261,32 @@ function fillTariffs() {
   if (!service || !tariff) return;
   const selected = services.find((item) => item.id === service.value) || services[0];
   tariff.innerHTML = selected.tariffs.map(([name, price], index) => '<option value="' + index + '">' + name + ' - ' + price.toLocaleString('ru-RU') + ' сум</option>').join('');
+  updateServiceInfo(selected);
+}
+
+function updateServiceInfo(selected) {
+  const detail = serviceDetails[selected.id] || {};
+  const tariff = qs('#tariff-select');
+  const tariffIndex = Number(tariff?.value || 0);
+  const selectedTariff = selected.tariffs[tariffIndex] || selected.tariffs[0];
+  const image = detail.image || '/assets/shop-service.png?v=2';
+  const preview = qs('#service-info-image');
+  if (preview) {
+    preview.src = image;
+    preview.alt = selected.name;
+  }
+  qs('#service-info-badge') && (qs('#service-info-badge').textContent = detail.badge || 'SERVICE');
+  qs('#service-info-title') && (qs('#service-info-title').textContent = selected.name);
+  qs('#service-info-price') && (qs('#service-info-price').textContent = selectedTariff[1].toLocaleString('ru-RU') + ' сум');
+  qs('#service-info-abilities') && (qs('#service-info-abilities').innerHTML = (detail.abilities || []).map((ability) => '<li>' + escapeText(ability) + '</li>').join(''));
 }
 
 qs('#refresh-status')?.addEventListener('click', refreshStatus);
 qs('#service-select')?.addEventListener('change', fillTariffs);
+qs('#tariff-select')?.addEventListener('change', () => {
+  const selected = services.find((item) => item.id === qs('#service-select')?.value) || services[0];
+  updateServiceInfo(selected);
+});
 fillTariffs();
 refreshStatus();
 
