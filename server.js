@@ -154,11 +154,25 @@ const SERVICE_DETAILS = {
   }
 };
 
+const SKIN_IMAGES = {
+  skin_snegovik: "/assets/skins/snegovik.webp?v=1",
+  skin_neo: "/assets/skins/neo.webp?v=1",
+  skin_crysis: "/assets/skins/crysis.webp?v=1",
+  skin_scream: "/assets/skins/scream.webp?v=1",
+  skin_neco: "/assets/skins/neco.webp?v=1",
+  skin_shadow: "/assets/skins/shadow.webp?v=1",
+  skin_joker: "/assets/skins/joker.webp?v=1",
+  skin_deadpool: "/assets/skins/deadpool.webp?v=1",
+  skin_assassin: "/assets/skins/assassin.webp?v=1",
+  skin_zombie_hunter: "/assets/skins/zombie-hunter.webp?v=1"
+};
+
 for (const service of SERVICES) {
   if (!SERVICE_DETAILS[service.id]) {
     SERVICE_DETAILS[service.id] = {
       badge: "SKIN",
       color: "orange",
+      image: SKIN_IMAGES[service.id],
       abilities: ["Модель игрока", "Яркий внешний вид", "Для Zombie сервера", "Выбор срока в магазине"]
     };
   }
@@ -817,8 +831,12 @@ function storePage() {
 function serviceCard(service) {
   const detail = SERVICE_DETAILS[service.id];
   const minPrice = Math.min(...service.tariffs.map(([, price]) => price));
+  const image = detail.image || "/assets/shop-service.png?v=2";
   return `<article class="service-card ${detail.color}">
-    <div class="service-preview"><span>${escapeHtml(detail.badge)}</span></div>
+    <div class="service-preview">
+      <img src="${escapeHtml(image)}" alt="${escapeHtml(service.name)}" loading="lazy">
+      <span>${escapeHtml(detail.badge)}</span>
+    </div>
     <div class="service-body">
       <h3>${escapeHtml(service.name)}</h3>
       <strong>от ${minPrice.toLocaleString("ru-RU")} сум</strong>
@@ -936,14 +954,70 @@ function usersPage() {
     ${roleGroupsHtml()}`);
 }
 
+function ruleSection(title, tone, items) {
+  return `<section class="rule-section ${tone}">
+    <h2>${escapeHtml(title)}</h2>
+    <div class="rule-list">
+      ${items.map(([number, heading, text, punishment]) => `<article class="rule-row">
+        <b>${escapeHtml(number)}</b>
+        <div>
+          <h3>${escapeHtml(heading)}</h3>
+          <p>${escapeHtml(text)}</p>
+          ${punishment ? `<small><strong>Наказание:</strong> ${escapeHtml(punishment)}</small>` : ""}
+        </div>
+      </article>`).join("")}
+    </div>
+  </section>`;
+}
+
 function rulesPage() {
-  return simplePage("Правила", "/rules_public", `<h2>Правила проекта</h2>
-    <ol class="rules">
-      <li>Играйте честно и уважайте других игроков.</li>
-      <li>Запрещены читы, скрипты, обходы банов и вредные команды.</li>
-      <li>Запрещены оскорбления, реклама и провокации.</li>
-      <li>Администрация ${escapeHtml(BRAND.name)} может обновлять правила по мере развития проекта.</li>
-    </ol>`);
+  const commonRules = [
+    ["1.1", "Микрофон 16+", "Не создавайте шум, эхо и помехи. Музыка и изменение голоса без согласия игроков запрещены.", "предупреждение, mute или kick."],
+    ["1.2", "Только честная игра", "Запрещены читы, скрипты, макросы, DRUN, SGS, сторонние модели и любые средства, дающие игровое преимущество.", "бан от 7 дней до постоянного."],
+    ["1.3", "Уважение к игрокам", "Запрещены оскорбления, угрозы, дискриминация, провокации и обсуждение родственников.", "предупреждение, mute или бан до 1 дня."],
+    ["1.4", "Без рекламы", "Запрещена реклама других серверов, сайтов, Telegram-каналов и услуг без разрешения владельца проекта.", "постоянный бан."],
+    ["1.5", "Не мешайте игре", "Запрещено намеренно блокировать игроков, использовать баги карты, срывать раунд или делать reconnect для ухода от наказания.", "kick или бан от 30 минут."],
+    ["1.6", "Корректный ник", "Ник не должен содержать рекламу, оскорбления, запрещённые символы или копировать ник администратора.", "просьба сменить ник, затем kick."]
+  ];
+  const vipRules = [
+    ["2.1", "Общие правила действуют для всех", "VIP, иммунитет и другие платные возможности не освобождают от правил сервера.", "ограничение иммунитета или обычное наказание."],
+    ["2.2", "Не передавайте доступ", "Запрещено передавать пароль, Steam ID или платную услугу другому человеку.", "блокировка услуги без компенсации."],
+    ["2.3", "Не злоупотребляйте привилегиями", "Нельзя использовать VIP-меню, бонусы, модели или иммунитет для помех игрокам и обхода решений администрации.", "ограничение иммунитета от 1 до 7 дней."],
+    ["2.4", "Не вмешивайтесь в работу администрации", "VIP-игрок не может требовать наказания другого игрока или мешать проверке. Жалоба подаётся через поддержку.", "предупреждение или ограничение услуги."],
+    ["2.5", "Повторные нарушения", "При систематических нарушениях платная услуга может быть приостановлена или удалена.", "ограничение или снятие услуги."]
+  ];
+  const adminRules = [
+    ["3.1", "Соблюдайте порядок наказаний", "Если ситуация не требует немедленного бана, используйте последовательность: предупреждение, mute, slay, kick, ban.", "замечание или снятие доступа."],
+    ["3.2", "Собирайте доказательства", "Перед баном за читы администратор обязан записать demo или сохранить другое проверяемое доказательство.", "отмена бана и замечание администратору."],
+    ["3.3", "Указывайте точную причину", "Срок и причина наказания должны соответствовать нарушению. Причины вроде «просто так» запрещены.", "предупреждение или ограничение прав."],
+    ["3.4", "Не используйте права в личных целях", "Запрещено выдавать предметы, менять карту, кикать и банить ради мести, шутки или преимущества.", "снятие административной услуги."],
+    ["3.5", "Не передавайте админ-доступ", "Логин, пароль и Steam ID администратора принадлежат только владельцу услуги.", "немедленная блокировка доступа."],
+    ["3.6", "Рассматривайте жалобы спокойно", "Администратор обязан отвечать по существу и выполнять решение главного администратора или владельца.", "замечание или понижение."],
+    ["3.7", "Администратор тоже игрок", "Все основные правила и правила платных услуг полностью распространяются на администрацию.", "наказание по общим правилам и снятие прав."]
+  ];
+  const requiredRules = [
+    ["4.1", "Ознакомление обязательно", "Заказывая услугу или заходя на сервер, пользователь подтверждает, что прочитал и принимает действующие правила.", ""],
+    ["4.2", "Незнание не освобождает", "Отсутствие ознакомления с правилами не отменяет ответственность за нарушение.", ""],
+    ["4.3", "Проверяйте данные заказа", "Автовыдача выполняется на указанный ник или Steam ID. Ошибочные данные необходимо сразу сообщить поддержке.", ""],
+    ["4.4", "Правила могут обновляться", `Администрация ${BRAND.name} публикует изменения на этой странице. Новая редакция действует после публикации.`, ""]
+  ];
+
+  return pageShell({
+    title: "Правила",
+    pathName: "/rules_public",
+    content: `<section class="rules-page">
+      <header class="rules-hero">
+        <span>OLDERA.UZ · ZOMBIE SERVER</span>
+        <h1>Правила проекта ${escapeHtml(BRAND.name)}</h1>
+        <p>Обязательны к ознакомлению для всех игроков и владельцев платных услуг.</p>
+      </header>
+      <h2 class="rules-server-title">Правила сервера ${escapeHtml(BRAND.serverName)}</h2>
+      ${ruleSection("Основные правила «Для всех»", "basic", commonRules)}
+      ${ruleSection("Правила для VIP-игроков", "vip", vipRules)}
+      ${ruleSection("Правила для администраторов", "admin", adminRules)}
+      ${ruleSection("Обязательно!", "required", requiredRules)}
+    </section>`
+  });
 }
 
 function supportPage() {
@@ -1026,15 +1100,16 @@ body{background:#080d14 url('/assets/oldera-bg.png') center top/cover fixed no-r
 .panel{background:#101925eb;border:1px solid #243245;border-radius:7px;box-shadow:0 14px 38px #0009}.panel h2,.panel h3{color:#eaf2ff}.panel a{border-bottom-color:#273447}.monitor{background:#101925f2}.monitor .panel-head{padding:14px 18px;background:#0b121d;border-radius:7px 7px 0 0}.monitor h2{font-size:16px;margin:0}.table-wrap{border-color:#2d3a4d;border-radius:0}table{background:#0b1320}th{background:#111927;color:#cbd5e3}td{background:#0d1623cc;color:#d8e2ee}th,td{border-color:#263345}.ip{color:#f3f8ff}.meter{background:#641522;border-color:#a42a3f;border-radius:3px}.total{height:28px;background:#681724;border-color:#b43449;border-radius:3px}.small-btn{border-radius:4px}.green{background:#16733c}.red{background:#8a1a2e}.gold{background:#a98925}
 .empty-grid{grid-template-columns:repeat(5,minmax(112px,1fr))}.player-card{border-radius:7px;background:linear-gradient(180deg,#101b2b,#0b1220);border-color:#2d3e57;box-shadow:inset 0 0 30px #0006}.player-card span{color:#f0c644}.player-card b{color:#f1f6ff}
 .store{display:flex;flex-direction:column}.store>h2,.store>.note{display:none}.shop-hero{order:1;min-height:210px;background:linear-gradient(90deg,#07101dfa 0%,#07101dbd 45%,#141b2a33),url('/assets/shop-service.png') center/cover no-repeat;border:1px solid #314052;border-radius:7px;margin-bottom:18px;padding:24px;display:flex;align-items:flex-end;justify-content:space-between;gap:18px;box-shadow:inset 0 -80px 100px #050910cc}.shop-hero h2{font-size:28px;margin:0 0 8px}.shop-hero p{margin:0;color:#bdc9d8}.shop-hero span{background:#671522;border:1px solid #bd3149;color:#fff;padding:10px 12px;border-radius:4px;font-weight:900}
-.service-cards{order:3;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.service-card{display:block;min-height:330px;padding:0;border-radius:7px;background:#0b1422;border-color:#2d3c52;box-shadow:0 16px 32px #0008}.service-card:before{display:none}.service-preview{height:142px;background:linear-gradient(180deg,#0b142255,#0b1422),url('/assets/shop-service.png') center/cover no-repeat;border-bottom:1px solid #2d3b51;display:flex;align-items:flex-end;padding:12px}.service-preview span{background:#7b1728;border:1px solid #d33a52;border-radius:4px;padding:7px 10px;color:#fff;font-weight:900}.service-body{padding:14px}.service-card h3{font-size:19px;margin:0 0 8px}.service-card strong{color:#fff;background:#182537;border:1px solid #32455e;border-radius:4px;padding:8px 10px;margin:0 0 12px;display:inline-block}.service-card ul{padding-left:18px;color:#b8c5d7}
+.service-cards{order:3;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.service-card{display:block;min-height:330px;padding:0;border-radius:7px;background:#0b1422;border-color:#2d3c52;box-shadow:0 16px 32px #0008}.service-card:before{display:none}.service-preview{height:205px;border-bottom:1px solid #2d3b51;position:relative;overflow:hidden;background:#09111d}.service-preview:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 42%,#0b1422e8 100%);pointer-events:none}.service-preview img{display:block;width:100%;height:100%;object-fit:cover;object-position:center 30%;transition:transform .25s ease}.service-card:hover .service-preview img{transform:scale(1.035)}.service-preview span{position:absolute;left:12px;bottom:12px;z-index:1;background:#7b1728;border:1px solid #d33a52;border-radius:4px;padding:7px 10px;color:#fff;font-weight:900}.service-body{padding:14px}.service-card h3{font-size:19px;margin:0 0 8px}.service-card strong{color:#fff;background:#182537;border:1px solid #32455e;border-radius:4px;padding:8px 10px;margin:0 0 12px;display:inline-block}.service-card ul{padding-left:18px;color:#b8c5d7}
 .order-box{order:2;background:#0b1320;border:1px solid #28374b;border-radius:7px;padding:18px;margin:0 0 18px}.order-box h3{margin:0;color:#fff}.form-grid label,.stack-form{color:#cdd7e5}input,select,textarea{background:#641522;color:#fff;border:1px solid #af2b42;border-radius:2px;box-shadow:inset 0 1px 0 #ffffff10}input::placeholder,textarea::placeholder{color:#d7a7af}.check-row{display:flex!important;align-items:center;gap:10px;background:#101928;border:1px solid #29394d;border-radius:4px;padding:10px 12px;color:#cfd9e8!important}.check-row input{width:18px;height:18px;accent-color:#c91524;flex:0 0 auto}.primary{background:#c91524;border-radius:3px;box-shadow:0 5px 16px #0007}.primary:hover{background:#e01f31}.pay-form{border-top-color:#2d3a4d}.operations-panel .table-wrap,.ban-search{margin-top:12px}.ban-search input{max-width:420px;background:#641522;border-color:#af2b42}
 .balance-panel,.two-col{gap:18px}.status-pill{border-radius:3px;background:#193423;color:#89e5a2}.modal{backdrop-filter:blur(5px)}.dialog{border-radius:7px;background:#101925;border-color:#34455b}.footer{background:#202028d9;max-width:none;margin-top:40px;padding-left:max(18px,calc((100vw - 1180px)/2 + 18px));padding-right:max(18px,calc((100vw - 1180px)/2 + 18px));border-top-color:#353441}.footer-logo{color:#f2404c!important;text-shadow:0 0 12px #ff3b4a88}
 .panel-link{display:inline-block!important;border:1px solid #33445c!important;border-radius:4px!important;padding:8px 10px!important;color:#dce7f5!important;background:#131e2d}.role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0 20px}.role-grid.compact{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.role-card{background:linear-gradient(180deg,#111b29,#0b1320);border:1px solid #2c3b50;border-left:4px solid var(--role);border-radius:6px;padding:13px;box-shadow:inset 0 0 30px #0005}.role-title{display:flex;align-items:center;gap:9px;margin-bottom:12px}.role-title span{width:12px;height:12px;border-radius:50%;background:var(--role);box-shadow:0 0 14px var(--role)}.role-title strong{color:var(--role);text-transform:uppercase;font-size:13px}.role-members{display:grid;gap:9px}.role-member{background:#0a111d;border:1px solid #253349;border-radius:5px;padding:10px}.role-member b{display:block;color:#fff}.role-member small{color:#93a3b8}.role-table{margin-top:16px}
+.rules-page{display:grid;gap:22px}.rules-hero{min-height:220px;padding:38px 42px;border:1px solid #26394d;border-radius:10px;background:linear-gradient(110deg,#0b1727fa,#0b1727b8 58%,#0b172744),url('/assets/support-banner.png?v=2') center/cover no-repeat;box-shadow:inset 0 0 70px #0008}.rules-hero span{display:inline-block;color:#9bdcff;font-size:13px;font-weight:900;text-transform:uppercase}.rules-hero h1{max-width:680px;margin:17px 0 10px;color:#9ddb23;font-size:36px;line-height:1.08}.rules-hero p{max-width:610px;margin:0;color:#c5d0df;font-size:18px;line-height:1.5}.rules-server-title{margin:10px 0 0;color:#9ddb23;font-size:30px;line-height:1.2}.rule-section{--rule-tone:#52cfff;background:#0c1522f5;border:1px solid #26374a;border-left:5px solid var(--rule-tone);border-radius:10px;padding:30px 34px;box-shadow:0 18px 45px #0007}.rule-section.vip{--rule-tone:#ffda20}.rule-section.admin{--rule-tone:#71f3a2}.rule-section.required{--rule-tone:#ff4b5f;background:#211116f5}.rule-section>h2{margin:0 0 22px;color:#f0f5ff;font-size:30px}.rule-list{display:grid}.rule-row{display:grid;grid-template-columns:82px minmax(0,1fr);gap:24px;padding:22px 8px;border-top:1px solid #233246}.rule-row:first-child{border-top:0}.rule-row>b{color:#73d9ff;font-size:19px}.rule-row h3{margin:0 0 7px;color:#f2f6fc;font-size:18px}.rule-row p{margin:0;color:#bdc8d8;font-size:16px;line-height:1.58}.rule-row small{display:block;margin-top:10px;color:#d6deea;font-size:14px;line-height:1.5}.rule-row small strong{color:var(--rule-tone)}
 @media (max-width:900px){body{background-attachment:scroll;overflow-x:hidden}.layout{grid-template-columns:1fr;margin-top:0;padding:0 12px}.main{order:1}.sidebar{order:2;gap:10px;overflow:hidden}.logo{min-height:86px;justify-content:flex-start;align-items:center;overflow:hidden;padding:10px 18px;gap:10px}.logo-mark{width:42px;height:42px;flex:0 0 42px}.logo strong{font-size:22px;white-space:nowrap;max-width:230px;overflow:hidden}.side-actions{grid-template-columns:1fr}.panel{border-radius:0}.shop-hero{min-height:190px;margin-left:-22px;margin-right:-22px;border-left:0;border-right:0;border-radius:0;align-items:flex-end;display:block}.shop-hero h2{font-size:24px}.shop-hero p{max-width:100%;overflow-wrap:anywhere}.shop-hero span{display:inline-block;margin-top:14px}.service-cards{grid-template-columns:1fr}.service-card{min-height:0}.empty-grid{grid-template-columns:1fr 1fr}.order-box{margin-left:-6px;margin-right:-6px}.topbar{position:sticky}.footer{grid-template-columns:1fr}}
 .footer{max-width:1180px;margin:40px auto 0;padding:34px 18px 52px;display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:28px;color:#aeb8c7;border-top:1px solid #273343}.footer a{display:block;color:#aeb8c7;margin:8px 0}.footer-logo{color:#fff!important;font-size:24px;font-weight:900}.footer p{line-height:1.6}.monitor{padding:0}.monitor .panel-head{padding:18px 22px}.monitor .table-wrap{border-left:0;border-right:0;border-radius:0}.monitor .total{margin:10px 12px 12px}
 /* BestKILL/GameCMS reference pass */
 .topbar{height:88px;justify-content:flex-start;padding:0 14px;background:#202128;border-top:6px solid #fff1e9}.nav{justify-content:flex-start}.nav a{height:86px;padding:0 24px;font-size:18px;color:#d8e5ff}.nav a.active{min-width:136px;justify-content:center;background:linear-gradient(135deg,#af69b7 0%,#ef3678 100%);border-radius:14px;color:#fff}.user-mini{right:38px;background:#111827;border:1px solid #ff1717;border-radius:0;color:#fff;padding:8px 17px}.crumb{max-width:none;margin:0;padding:19px 14px;background:#33363e;border:0;border-radius:0;color:#9ea6b3}.layout{max-width:none;margin:0;grid-template-columns:382px minmax(0,1fr);gap:38px;padding:38px 14px 24px;background:linear-gradient(90deg,#172030e8,#131b29c2),url('/assets/oldera-bg.png') center top/cover fixed no-repeat}.main{gap:52px}.logo{min-height:178px;padding:0 6px 18px;align-items:flex-end}.logo-mark{width:78px;height:78px;border-radius:16px;font-size:34px}.logo strong{font-size:52px;letter-spacing:-2px}.side-actions{gap:12px}.side-btn{min-height:50px;border-radius:7px;background:#111a2a;border-color:#182842;text-align:center;font-size:17px}.side-btn:first-child{border-color:#ff9900}.side-btn.accent{background:linear-gradient(100deg,#fa9226,#f05270)}.panel{border-radius:10px;background:#0d1724f5;border-color:#18263a}.auth-panel{padding:34px 36px}.auth-panel h3,.online-panel h3,.top-users h3{font-size:23px;color:#d6e3ff}.auth-button{width:100%;min-height:50px;margin-top:13px;border:1px solid #ff1717;background:#4a1019;color:#fff;font-weight:800;font-size:16px;cursor:pointer}.auth-red{background:#ff1111}.auth-vk{background:#580d18}.auth-outline{background:#25101a}.online-panel{padding:34px 36px}.online-panel h3{display:flex;gap:18px}.online-list,.top-list{display:grid;gap:0}.online-user{display:grid;grid-template-columns:52px 1fr;gap:12px;align-items:center;padding:12px 0;border-top:1px solid #2b3544}.avatar{width:50px;height:50px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#404b5a,#d3d8dc);color:#111827;font-weight:900}.online-user b{display:block;color:var(--user-color);font-size:18px}.online-user small{color:#d4e0f7;font-size:15px}.top-list>div{padding:13px 0;border-top:1px solid #2b3544}.top-list b{display:block;color:#d9e7ff}.top-list small{color:#9da9ba}.monitor{margin-top:0}.monitor .panel-head{display:none}.monitor th{font-size:18px}.monitor td{font-size:17px}.support-banner{min-height:315px;border-radius:0;background:linear-gradient(90deg,#050608 0%,#05060899 46%,#05060866),url('/assets/shop-service.png') center/cover no-repeat;padding:50px 70px;display:flex;align-items:center}.support-banner h2{display:inline-block;margin:0 0 24px;padding:10px 14px;border-radius:8px;background:#252936d9;color:#fff;font-size:40px;font-weight:400}.support-banner p{display:inline-block;margin:0 0 28px;padding:9px 12px;border-radius:8px;background:#252936d9;color:#cbd5e3;font-size:17px}.support-banner a{display:inline-block;background:#ff1717;color:#fff;padding:15px 28px;font-weight:900}.chat-panel{padding:38px}.chat-panel h2{font-size:24px;margin-bottom:36px}.chat-list{display:grid;gap:0}.chat-message{display:grid;grid-template-columns:64px 1fr 70px;gap:18px;padding:18px 10px;border-bottom:1px solid #2a3445}.chat-message.pinned{background:#3a3a4d;padding:16px}.chat-body b{color:var(--chat-color);font-size:16px}.chat-body p{margin:8px 0 0;color:#dbe7ff;font-size:20px;line-height:1.32}.chat-message.pinned p{color:#42ff63;font-size:16px}.chat-message time{text-align:right;color:#cfe1ff}.chat-message time span{display:block}.chat-login{text-align:center;margin:34px 0 0;color:#d8e2ef}.chat-login a{display:inline!important;border:0!important;color:#ff4a12!important;text-decoration:underline}.footer{max-width:none;background:#202128;margin:0;padding:34px 70px 52px;border-top:1px solid #30313a}
-@media (max-width:900px){.topbar{height:64px;padding:0}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{height:64px;padding:0 14px;white-space:nowrap;font-size:14px}.nav a.active{min-width:0;border-radius:0}.layout{grid-template-columns:1fr;padding:18px 12px;gap:18px}.main{order:1;gap:20px}.sidebar{order:2}.logo{min-height:96px}.logo strong{font-size:30px}.logo-mark{width:50px;height:50px}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}.support-banner{min-height:230px;padding:28px 22px}.support-banner h2{font-size:28px}.support-banner p{font-size:15px}.chat-panel{padding:22px}.chat-message{grid-template-columns:50px 1fr;gap:12px}.chat-message time{grid-column:2;text-align:left}.chat-body p{font-size:17px}.auth-panel,.online-panel{padding:24px}.footer{padding:28px 18px}}
+@media (max-width:900px){.topbar{height:64px;padding:0}.nav{overflow:auto;justify-content:flex-start;width:100%}.nav a{height:64px;padding:0 14px;white-space:nowrap;font-size:14px}.nav a.active{min-width:0;border-radius:0}.layout{grid-template-columns:1fr;padding:18px 12px;gap:18px}.main{order:1;gap:20px}.sidebar{order:2}.logo{min-height:96px}.logo strong{font-size:30px}.logo-mark{width:50px;height:50px}.empty-grid{grid-template-columns:1fr 1fr}.two-col,.form-grid,.footer{grid-template-columns:1fr}.user-mini{display:none}.support-banner{min-height:230px;padding:28px 22px}.support-banner h2{font-size:28px}.support-banner p{font-size:15px}.chat-panel{padding:22px}.chat-message{grid-template-columns:50px 1fr;gap:12px}.chat-message time{grid-column:2;text-align:left}.chat-body p{font-size:17px}.auth-panel,.online-panel{padding:24px}.footer{padding:28px 18px}.service-preview{height:230px}.rules-page{gap:16px}.rules-hero{min-height:190px;padding:28px 22px}.rules-hero h1{font-size:29px}.rules-hero p{font-size:16px}.rules-server-title{font-size:25px}.rule-section{padding:23px 18px}.rule-section>h2{font-size:25px}.rule-row{grid-template-columns:52px minmax(0,1fr);gap:12px;padding:20px 0}.rule-row>b{font-size:16px}.rule-row h3{font-size:17px}.rule-row p{font-size:15px}}
 /* Exact desktop geometry measured from the GameCMS reference */
 @media (min-width:901px){
 body{font-size:14px;background-position:center 115px;background-size:cover}
