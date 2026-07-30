@@ -299,6 +299,11 @@ function normalizeDb(db = {}) {
   db.topups ||= [];
   db.payments ||= [];
   db.bans ||= [];
+  db.messages ||= [];
+  db.friendships ||= [];
+  db.notifications ||= [];
+  db.wallPosts ||= [];
+  for (const user of db.users) user.profile ||= {};
   return db;
 }
 
@@ -489,13 +494,65 @@ function currentUser(req, db) {
 }
 
 function publicUser(user) {
+  const profile = user.profile || {};
   return {
     login: user.login,
     email: user.email,
     balance: Number(user.balance || 0),
     role: user.role || "Пользователь",
-    createdAt: user.createdAt
+    createdAt: user.createdAt,
+    profile: {
+      displayName: String(profile.displayName || user.login),
+      firstName: String(profile.firstName || ""),
+      birthDate: String(profile.birthDate || ""),
+      serverNick: String(profile.serverNick || ""),
+      discord: String(profile.discord || ""),
+      bio: String(profile.bio || ""),
+      avatarData: validAvatarData(profile.avatarData) ? profile.avatarData : ""
+    }
   };
+}
+
+function publicMember(user) {
+  const member = publicUser(user);
+  return {
+    login: member.login,
+    role: member.role,
+    createdAt: member.createdAt,
+    profile: member.profile
+  };
+}
+
+function findUser(db, login) {
+  const normalized = String(login || "").trim().toLowerCase();
+  return db.users.find((user) => user.login.toLowerCase() === normalized) || null;
+}
+
+function validAvatarData(value) {
+  const avatar = String(value || "");
+  return avatar.length >= 100
+    && avatar.length <= 450_000
+    && /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=\s]+$/i.test(avatar);
+}
+
+function addNotification(db, login, text, type = "info") {
+  db.notifications.push({
+    id: randomUUID(),
+    login,
+    text: String(text).slice(0, 240),
+    type,
+    createdAt: new Date().toISOString()
+  });
+}
+
+function friendshipIncludes(friendship, login) {
+  const normalized = String(login || "").toLowerCase();
+  return friendship.users.some((item) => String(item).toLowerCase() === normalized);
+}
+
+function otherFriendLogin(friendship, login) {
+  const normalized = String(login || "").toLowerCase();
+  return friendship.users.find((item) => String(item).toLowerCase() !== normalized) || "";
 }
 
 function hasValidAdminPin(req, data = {}) {
@@ -813,8 +870,10 @@ function pageShell({ title, pathName = "/", content }) {
 </head>
 <body>
   <header class="topbar">
-    <nav class="nav">${TOP_NAV.map(([href, label]) => `<a class="${active(href)}" href="${href}">${label}</a>`).join("")}</nav>
+    <button class="mobile-menu-toggle" id="mobile-menu-toggle" type="button" title="Открыть меню" aria-label="Открыть меню">☰</button>
+    <nav class="nav" id="main-nav">${TOP_NAV.map(([href, label]) => `<a class="${active(href)}" href="${href}">${label}</a>`).join("")}</nav>
     <button class="user-mini" id="user-menu-button" data-modal="login">Войти на сайт</button>
+    <div class="account-dropdown" id="account-dropdown" hidden></div>
   </header>
   <div class="crumb">Главная страница${pathName === "/" ? "" : " / " + escapeHtml(title)}</div>
   <main class="layout">
@@ -1294,8 +1353,19 @@ function accountPage() {
   return pageShell({
     title: "Личный кабинет",
     pathName: "/account",
-    content: `${serverTable()}<section class="panel account-panel" id="account-panel">
-      <div class="account-loading">Загружаем аккаунт...</div>
+    content: `<section class="account-workspace">
+      <nav class="account-tabs" aria-label="Разделы личного кабинета">
+        <button type="button" data-account-link="profile">Профиль</button>
+        <button type="button" data-account-link="messages">Сообщения</button>
+        <button type="button" data-account-link="friends">Друзья</button>
+        <button type="button" data-account-link="settings">Настройки</button>
+        <button type="button" data-account-link="balance">Баланс</button>
+        <button type="button" data-account-link="notifications">Уведомления</button>
+        <button type="button" data-account-link="services">Услуги</button>
+      </nav>
+      <section class="panel account-panel" id="account-panel">
+        <div class="account-loading">Загружаем аккаунт...</div>
+      </section>
     </section>`
   });
 }
@@ -1449,6 +1519,21 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 @media (max-width:900px){
 .home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.card-requisites strong{font-size:17px}.admin-login{grid-template-columns:1fr}.admin-order{grid-template-columns:1fr}.admin-receipt{width:100%;height:250px}.admin-order-title{display:grid}.admin-order-meta{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}.account-head{align-items:flex-start;flex-direction:column}.account-actions{width:100%}.account-actions a,.account-actions button{flex:1}.account-stats{grid-template-columns:1fr}.account-order{grid-template-columns:1fr}.account-order-status{justify-self:start}
 }
+.mobile-menu-toggle{display:none}
+.account-dropdown{position:absolute;right:max(12px,calc((100vw - 1300px)/2 + 12px));top:65px;z-index:18;width:310px;background:#fff;color:#252834;border:1px solid #d7dbe2;box-shadow:0 22px 50px #0009}
+.account-dropdown a,.account-dropdown button{width:100%;min-height:48px;display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border:0;border-bottom:1px solid #d4d7dc;background:#fff;color:#555d6d;text-align:left;cursor:pointer}
+.account-dropdown a:hover,.account-dropdown button:hover{background:#f1f3f6;color:#111827}.account-dropdown [data-logout]{color:#9b2638}.account-dropdown[hidden]{display:none}
+.user-mini.account-trigger{min-width:190px;display:grid;grid-template-columns:34px minmax(0,1fr) 14px;gap:9px;align-items:center;text-align:left}
+.user-avatar-mini{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,#55d7df,#ef477d);color:#fff;font-weight:900}.user-avatar-mini img{width:100%;height:100%;object-fit:cover}.user-trigger-copy{min-width:0}.user-trigger-copy strong,.user-trigger-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-trigger-copy small{margin-top:2px;color:#9ca8ba}
+.account-workspace{display:grid;gap:12px}.account-tabs{display:flex;overflow:auto;background:#0b1421;border:1px solid #28394d}.account-tabs button{min-height:46px;padding:10px 16px;border:0;border-right:1px solid #28394d;background:#0b1421;color:#aebacd;white-space:nowrap;cursor:pointer}.account-tabs button.active{background:#641522;color:#fff}
+.account-panel{padding:0;overflow:hidden}.account-view[hidden]{display:none}.profile-cover{height:180px;background:linear-gradient(90deg,#07101dc4,#07101d45),url('/assets/oldera-bg.png') center 28%/cover no-repeat;position:relative}.profile-identity{display:flex;align-items:flex-end;gap:18px;padding:0 28px 24px;margin-top:-58px;position:relative}.profile-avatar{width:128px;height:128px;flex:0 0 128px;border:5px solid #0d1724;border-radius:50%;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,#55d7df,#ef477d);color:#fff;font-size:48px;font-weight:900}.profile-avatar img{width:100%;height:100%;object-fit:cover}.profile-name{min-width:0;padding-bottom:8px}.profile-name h2{margin:0 0 6px;font-size:27px}.profile-name p{margin:0;color:#98a6ba}.profile-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid #293648;border-bottom:1px solid #293648}.profile-summary>div{padding:18px 22px;border-right:1px solid #293648}.profile-summary>div:last-child{border-right:0}.profile-summary span{display:block;margin-bottom:6px;color:#8e9caf}.profile-summary strong{font-size:18px;color:#fff}
+.account-role{color:#55708f;font-weight:800}.account-role.owner{color:#ff355d}.account-role.head-admin{color:#ffb02e}.account-role.admin{color:#36d7ff}.account-role.moderator{color:#b18cff}.account-role.elder{color:#63e68a}.account-role.vip{color:#ffe14a}.account-role.user{color:#55708f}
+.profile-section{padding:26px 28px;border-bottom:1px solid #293648}.profile-section:last-child{border-bottom:0}.profile-section h3{margin:0 0 20px;font-size:22px}.profile-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border:1px solid #293648}.profile-info-row{display:grid;grid-template-columns:130px minmax(0,1fr);gap:16px;padding:15px 17px;border-bottom:1px solid #293648}.profile-info-row:nth-last-child(-n+2){border-bottom:0}.profile-info-row span{color:#8e9caf}.profile-info-row strong{color:#dbe5f3;overflow-wrap:anywhere}.profile-bio{margin:0;color:#aebacd;line-height:1.65}
+.account-list{display:grid;gap:10px}.account-list-item{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:12px;align-items:center;padding:13px;background:#0b1421;border:1px solid #29394d}.account-list-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;overflow:hidden;background:#253247;color:#fff;font-weight:900}.account-list-avatar img{width:100%;height:100%;object-fit:cover}.account-list-copy{min-width:0}.account-list-copy strong,.account-list-copy small{display:block}.account-list-copy small{margin-top:4px;color:#8e9caf;overflow-wrap:anywhere}.account-list-item button{border:1px solid #8e2b3c;background:#641522;color:#fff;padding:8px 10px;cursor:pointer}
+.account-empty{padding:24px;text-align:center;color:#8796aa;border:1px dashed #31445a}.account-form{display:grid;gap:13px}.account-form.two{grid-template-columns:repeat(2,minmax(0,1fr))}.account-form label{display:grid;gap:7px;color:#c8d3e2}.account-form .wide{grid-column:1/-1}.account-form input,.account-form textarea{background:#0b1421;border-color:#34465d}.account-form textarea{min-height:110px}.account-form-actions{display:flex;gap:10px;align-items:center}.account-form-actions button{min-height:42px}.avatar-preview-row{display:flex;align-items:center;gap:14px}.avatar-preview-row .profile-avatar{width:86px;height:86px;flex-basis:86px;border-width:3px;font-size:30px}.wall-editor{display:grid;gap:10px}.wall-editor textarea{min-height:120px;background:#fff;color:#17202d;border-color:#cad0d8}.wall-post{padding:16px;border:1px solid #29394d;background:#0b1421}.wall-post-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.wall-post time{color:#7f8da1}.wall-post p{margin:0;color:#d3deeb;white-space:pre-wrap;line-height:1.55}.section-title-row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.section-title-row h2{margin:0}.section-title-row span{color:#7f8da1}.account-search-results{display:grid;gap:8px}.account-result{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px;background:#0b1421;border:1px solid #29394d}.account-result button{border:0;background:#277c50;color:#fff;padding:8px 11px;cursor:pointer}.notification-dot{width:10px;height:10px;border-radius:50%;background:#e3425b}.service-status{color:#77e7a2;font-weight:700}
+@media (max-width:900px){
+.topbar{height:78px;padding:0 12px;display:flex;justify-content:space-between;gap:10px}.mobile-menu-toggle{display:grid;place-items:center;width:48px;height:48px;flex:0 0 48px;border:1px solid #3b4352;background:#171a23;color:#dbe5f5;font-size:25px;cursor:pointer}.nav{display:none;position:absolute;left:12px;right:12px;top:70px;height:auto;width:auto!important;z-index:17;overflow:visible!important;background:#171a23;border:1px solid #3b4352;box-shadow:0 20px 45px #000b}.nav.show{display:grid}.nav a,.nav a.active{height:50px;min-width:0;border-radius:0;padding:0 18px;border-bottom:1px solid #323945;background:#171a23;font-size:14px}.nav a.active{color:#f44c81}.user-mini,.user-mini.account-trigger{position:relative;right:auto;display:grid;min-width:0;width:min(245px,calc(100vw - 86px));height:58px;padding:7px 10px;border-color:#333a48;background:#fff;color:#202532}.user-mini:not(.account-trigger){display:flex;align-items:center;justify-content:center}.user-trigger-copy small{color:#8892a2}.account-dropdown{position:absolute;top:68px;right:0;width:min(330px,calc(100vw - 62px));max-height:calc(100vh - 90px);overflow:auto}.crumb{height:58px;padding:0 18px}.layout{padding:18px 10px}.account-tabs{margin:0 -10px}.account-tabs button{padding:9px 13px}.account-panel{margin:0 -10px}.profile-cover{height:135px}.profile-identity{align-items:center;padding:0 18px 20px;margin-top:-44px}.profile-avatar{width:94px;height:94px;flex-basis:94px;font-size:34px}.profile-name h2{font-size:21px;overflow-wrap:anywhere}.profile-summary{grid-template-columns:1fr}.profile-summary>div{border-right:0;border-bottom:1px solid #293648}.profile-summary>div:last-child{border-bottom:0}.profile-section{padding:22px 18px}.profile-info-grid{grid-template-columns:1fr}.profile-info-row{grid-template-columns:105px minmax(0,1fr)}.profile-info-row:nth-last-child(2){border-bottom:1px solid #293648}.account-form.two{grid-template-columns:1fr}.account-form .wide{grid-column:auto}.account-form-actions{align-items:stretch;flex-direction:column}.account-form-actions button{width:100%}.account-list-item{grid-template-columns:42px minmax(0,1fr)}.account-list-item>button{grid-column:2;justify-self:start}.section-title-row{align-items:flex-start;flex-direction:column}.wall-editor textarea{min-height:150px}
+}
 `;
 }
 
@@ -1494,62 +1579,240 @@ function escapeText(value) {
   return div.innerHTML;
 }
 
+function escapeAttr(value) {
+  return escapeText(value).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
 function formatAccountMoney(value) {
   return Number(value || 0).toLocaleString('ru-RU') + ' сум';
 }
 
-function renderAccount(user, orders) {
-  const panel = qs('#account-panel');
-  if (!panel) return;
-  const orderLabels = {
-    'pending-payment-review': 'Ожидает проверки',
-    'payment-confirming': 'Выполняется выдача',
-    'paid-issued': 'Оплачен и выдан',
-    'paid-pending-server-integration': 'Выдача ожидает',
-    rejected: 'Отклонён'
-  };
-  const orderRows = (orders || []).length
-    ? orders.map((order) => '<article class="account-order"><div><strong>' +
-        escapeText(order.serviceName || order.service || 'Заказ') + '</strong><small>' +
-        escapeText(order.tariffName || '') + ' · ' +
-        Number(order.price || 0).toLocaleString('ru-RU') + ' сум · ' +
-        new Date(order.createdAt).toLocaleString('ru-RU') +
-        '</small></div><span class="account-order-status">' +
-        escapeText(orderLabels[order.status] || order.status) +
-        '</span></article>').join('')
-    : '<p class="empty">Заказов пока нет.</p>';
-  panel.innerHTML =
-    '<div class="account-head"><div class="account-person"><div class="account-avatar">' +
-      escapeText(user.login.slice(0, 1).toUpperCase()) +
-      '</div><div><h2>' + escapeText(user.login) + '</h2><p>' +
-      escapeText(user.email) +
-      '</p></div></div><div class="account-actions"><a href="/store">Перейти в магазин</a>' +
-      '<button type="button" data-logout>Выйти</button></div></div>' +
-    '<div class="account-stats">' +
-      '<div class="account-stat"><span>Баланс</span><strong>' + formatAccountMoney(user.balance) + '</strong></div>' +
-      '<div class="account-stat"><span>Группа</span><strong>' + escapeText(user.role) + '</strong></div>' +
-      '<div class="account-stat"><span>Дата регистрации</span><strong>' +
-        new Date(user.createdAt).toLocaleDateString('ru-RU') +
-      '</strong></div>' +
-    '</div><div class="account-orders"><h3>Мои заказы</h3>' + orderRows + '</div>';
+let accountState = null;
+
+function accountAvatar(user, className) {
+  const profile = user.profile || {};
+  const content = profile.avatarData
+    ? '<img src="' + profile.avatarData + '" alt="' + escapeAttr(profile.displayName || user.login) + '">'
+    : escapeText((profile.displayName || user.login).slice(0, 1).toUpperCase());
+  return '<div class="' + className + '">' + content + '</div>';
 }
 
-function applyCurrentUser(user, orders) {
+function accountRoleClass(role) {
+  const value = String(role || '').toLowerCase();
+  if (value.includes('владел')) return 'owner';
+  if (value.includes('гл.') || value.includes('главн')) return 'head-admin';
+  if (value.includes('админист')) return 'admin';
+  if (value.includes('модера')) return 'moderator';
+  if (value.includes('старост')) return 'elder';
+  if (value.includes('vip') || value.includes('вип')) return 'vip';
+  return 'user';
+}
+
+function accountDate(value, withTime = false) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return 'Не указано';
+  return withTime ? date.toLocaleString('ru-RU') : date.toLocaleDateString('ru-RU');
+}
+
+function orderStatusLabel(status) {
+  return ({
+    'pending-payment-review': 'Ожидает проверки',
+    'payment-confirming': 'Выполняется выдача',
+    'paid-issued': 'Активна',
+    'paid-pending-server-integration': 'Выдача ожидает',
+    rejected: 'Отклонена'
+  })[status] || status || 'Создана';
+}
+
+function currentAccountSection() {
+  const section = location.hash.replace('#', '');
+  return ['profile', 'messages', 'friends', 'settings', 'balance', 'notifications', 'services'].includes(section)
+    ? section
+    : 'profile';
+}
+
+function renderWallPosts(posts, user) {
+  if (!posts.length) return '<div class="account-empty">На стене пока нет записей.</div>';
+  return posts.map((post) =>
+    '<article class="wall-post"><div class="wall-post-head"><strong>' +
+    escapeText(user.profile?.displayName || user.login) + '</strong><time>' +
+    accountDate(post.createdAt, true) + '</time></div><p>' + escapeText(post.text) + '</p></article>'
+  ).join('');
+}
+
+function renderProfileView(data) {
+  const user = data.user;
+  const profile = user.profile || {};
+  return '<div class="account-view" data-account-view="profile">' +
+    '<div class="profile-cover"></div>' +
+    '<div class="profile-identity">' + accountAvatar(user, 'profile-avatar') +
+      '<div class="profile-name"><h2>' + escapeText(profile.displayName || user.login) + '</h2>' +
+      '<p><span class="account-role ' + accountRoleClass(user.role) + '">' + escapeText(user.role) + '</span> · онлайн</p></div></div>' +
+    '<div class="profile-summary">' +
+      '<div><span>Баланс</span><strong>' + formatAccountMoney(user.balance) + '</strong></div>' +
+      '<div><span>Скидка</span><strong>0%</strong></div>' +
+      '<div><span>Друзья</span><strong>' + data.friends.length + '</strong></div>' +
+    '</div>' +
+    '<section class="profile-section"><h3>Общая информация</h3><div class="profile-info-grid">' +
+      '<div class="profile-info-row"><span>ID</span><strong>' + escapeText(user.login) + '</strong></div>' +
+      '<div class="profile-info-row"><span>Группа</span><strong class="account-role ' + accountRoleClass(user.role) + '">' + escapeText(user.role) + '</strong></div>' +
+      '<div class="profile-info-row"><span>Регистрация</span><strong>' + accountDate(user.createdAt) + '</strong></div>' +
+      '<div class="profile-info-row"><span>Ник на сервере</span><strong>' + escapeText(profile.serverNick || 'Не указан') + '</strong></div>' +
+    '</div></section>' +
+    '<section class="profile-section"><h3>Личные и контактные данные</h3><div class="profile-info-grid">' +
+      '<div class="profile-info-row"><span>Имя</span><strong>' + escapeText(profile.firstName || 'Не указано') + '</strong></div>' +
+      '<div class="profile-info-row"><span>Дата рождения</span><strong>' + escapeText(profile.birthDate || 'Не указана') + '</strong></div>' +
+      '<div class="profile-info-row"><span>Discord</span><strong>' + escapeText(profile.discord || 'Не указан') + '</strong></div>' +
+      '<div class="profile-info-row"><span>E-mail</span><strong>' + escapeText(user.email) + '</strong></div>' +
+    '</div>' + (profile.bio ? '<p class="profile-bio">' + escapeText(profile.bio) + '</p>' : '') + '</section>' +
+    '<section class="profile-section"><div class="section-title-row"><h3>Привилегии</h3><span>' + data.services.length + '</span></div>' +
+      (data.services.length ? data.services.map((service) =>
+        '<article class="account-list-item"><div class="account-list-avatar">★</div><div class="account-list-copy"><strong>' +
+        escapeText(service.serviceName || 'Услуга') + '</strong><small>' +
+        escapeText(service.tariffName || '') + ' · ' + accountDate(service.createdAt) +
+        '</small></div><span class="service-status">' + escapeText(orderStatusLabel(service.status)) + '</span></article>'
+      ).join('') : '<div class="account-empty">Привилегий пока нет.</div>') +
+    '</section>' +
+    '<section class="profile-section"><h3>Стена</h3><form id="wall-form" class="wall-editor">' +
+      '<textarea name="text" maxlength="1000" placeholder="Напишите новую запись..." required></textarea>' +
+      '<div class="account-form-actions"><button class="primary" type="submit">Опубликовать</button><div id="wall-result" class="result"></div></div>' +
+    '</form><div class="account-list" id="wall-posts">' + renderWallPosts(data.wallPosts, user) + '</div></section>' +
+  '</div>';
+}
+
+function renderMessagesView(data) {
+  const items = data.messages.length ? data.messages.map((message) => {
+    const outgoing = message.from.toLowerCase() === data.user.login.toLowerCase();
+    const partner = outgoing ? message.to : message.from;
+    return '<article class="account-list-item"><div class="account-list-avatar">' +
+      escapeText(partner.slice(0, 1).toUpperCase()) + '</div><div class="account-list-copy"><strong>' +
+      escapeText((outgoing ? 'Вы → ' : '') + partner) + '</strong><small>' +
+      escapeText(message.text) + ' · ' + accountDate(message.createdAt, true) +
+      '</small></div></article>';
+  }).join('') : '<div class="account-empty">Сообщений пока нет.</div>';
+  return '<div class="account-view" data-account-view="messages"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Сообщения</h2><span>' + data.messages.length + '</span></div>' +
+    '<form id="message-form" class="account-form"><label>Логин получателя<input name="to" maxlength="30" required placeholder="Логин пользователя"></label>' +
+    '<label>Сообщение<textarea name="text" maxlength="1000" required placeholder="Введите сообщение"></textarea></label>' +
+    '<div class="account-form-actions"><button class="primary" type="submit">Отправить</button><div id="message-result" class="result"></div></div></form>' +
+    '<div class="account-list">' + items + '</div></section></div>';
+}
+
+function renderFriendsView(data) {
+  const items = data.friends.length ? data.friends.map((friend) =>
+    '<article class="account-list-item">' + accountAvatar(friend, 'account-list-avatar') +
+    '<div class="account-list-copy"><strong>' + escapeText(friend.profile?.displayName || friend.login) +
+    '</strong><small>' + escapeText(friend.login) + ' · ' + escapeText(friend.profile?.serverNick || 'игровой ник не указан') +
+    '</small></div><button type="button" data-friend-action="remove" data-friend-login="' + escapeAttr(friend.login) + '">Удалить</button></article>'
+  ).join('') : '<div class="account-empty">Список друзей пуст.</div>';
+  return '<div class="account-view" data-account-view="friends"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Друзья</h2><span>' + data.friends.length + '</span></div>' +
+    '<form id="friend-search-form" class="account-form"><label>Найти пользователя<input name="q" minlength="2" maxlength="30" required placeholder="Логин, имя или игровой ник"></label>' +
+    '<div class="account-form-actions"><button class="primary" type="submit">Найти</button><div id="friend-result" class="result"></div></div></form>' +
+    '<div class="account-search-results" id="friend-search-results"></div><div class="account-list">' + items + '</div>' +
+    '</section></div>';
+}
+
+function renderSettingsView(data) {
+  const user = data.user;
+  const profile = user.profile || {};
+  return '<div class="account-view" data-account-view="settings"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Настройки профиля</h2><span>' + escapeText(user.login) + '</span></div>' +
+    '<form id="profile-form" class="account-form two">' +
+      '<div class="wide avatar-preview-row">' + accountAvatar(user, 'profile-avatar') +
+        '<label>Новый аватар<input id="avatar-input" name="avatar" type="file" accept="image/jpeg,image/png,image/webp"></label></div>' +
+      '<label>Отображаемое имя<input name="displayName" maxlength="60" value="' + escapeAttr(profile.displayName || user.login) + '" required></label>' +
+      '<label>Имя<input name="firstName" maxlength="40" value="' + escapeAttr(profile.firstName || '') + '"></label>' +
+      '<label>Дата рождения<input name="birthDate" type="date" value="' + escapeAttr(profile.birthDate || '') + '"></label>' +
+      '<label>Ник на сервере<input name="serverNick" maxlength="32" value="' + escapeAttr(profile.serverNick || '') + '"></label>' +
+      '<label>Discord<input name="discord" maxlength="60" value="' + escapeAttr(profile.discord || '') + '"></label>' +
+      '<label class="wide">О себе<textarea name="bio" maxlength="500">' + escapeText(profile.bio || '') + '</textarea></label>' +
+      '<label class="check-row wide"><input name="removeAvatar" type="checkbox"> Удалить текущий аватар</label>' +
+      '<div class="account-form-actions wide"><button class="primary" type="submit">Сохранить</button><div id="profile-result" class="result"></div></div>' +
+    '</form></section></div>';
+}
+
+function renderBalanceView(data) {
+  return '<div class="account-view" data-account-view="balance"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Баланс</h2><span>Личный счёт</span></div>' +
+    '<div class="profile-summary"><div><span>Доступно</span><strong>' + formatAccountMoney(data.user.balance) +
+    '</strong></div><div><span>Скидка</span><strong>0%</strong></div><div><span>Заказов</span><strong>' +
+    data.services.length + '</strong></div></div><div class="account-form-actions"><a class="primary" href="/store">Перейти в магазин</a></div>' +
+    '</section></div>';
+}
+
+function renderNotificationsView(data) {
+  const items = data.notifications.length ? data.notifications.map((item) =>
+    '<article class="account-list-item"><span class="notification-dot"></span><div class="account-list-copy"><strong>' +
+    escapeText(item.text) + '</strong><small>' + accountDate(item.createdAt, true) + '</small></div></article>'
+  ).join('') : '<div class="account-empty">Уведомлений пока нет.</div>';
+  return '<div class="account-view" data-account-view="notifications"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Уведомления</h2><span>' + data.notifications.length + '</span></div>' +
+    '<div class="account-list">' + items + '</div></section></div>';
+}
+
+function renderServicesView(data) {
+  const items = data.services.length ? data.services.map((service) =>
+    '<article class="account-list-item"><div class="account-list-avatar">★</div><div class="account-list-copy"><strong>' +
+    escapeText(service.serviceName || 'Услуга') + '</strong><small>' + escapeText(service.tariffName || '') +
+    ' · ' + Number(service.price || 0).toLocaleString('ru-RU') + ' сум · ' + accountDate(service.createdAt) +
+    '</small></div><span class="service-status">' + escapeText(orderStatusLabel(service.status)) + '</span></article>'
+  ).join('') : '<div class="account-empty">Услуг пока нет. Выберите привилегию в магазине.</div>';
+  return '<div class="account-view" data-account-view="services"><section class="profile-section">' +
+    '<div class="section-title-row"><h2>Мои услуги</h2><a class="primary" href="/store">Магазин</a></div>' +
+    '<div class="account-list">' + items + '</div></section></div>';
+}
+
+function renderAccount(data) {
+  const panel = qs('#account-panel');
+  if (!panel) return;
+  accountState = data;
+  const section = currentAccountSection();
+  const renderers = {
+    profile: renderProfileView,
+    messages: renderMessagesView,
+    friends: renderFriendsView,
+    settings: renderSettingsView,
+    balance: renderBalanceView,
+    notifications: renderNotificationsView,
+    services: renderServicesView
+  };
+  panel.innerHTML = renderers[section](data);
+  qsa('[data-account-link]').forEach((button) => button.classList.toggle('active', button.dataset.accountLink === section));
+}
+
+function applyCurrentUser(user) {
+  const profile = user.profile || {};
   const topButton = qs('#user-menu-button');
   if (topButton) {
-    const link = document.createElement('a');
-    link.id = 'user-menu-button';
-    link.className = 'user-mini';
-    link.href = '/account';
-    link.textContent = user.login;
-    topButton.replaceWith(link);
+    const button = document.createElement('button');
+    button.id = 'user-menu-button';
+    button.className = 'user-mini account-trigger';
+    button.type = 'button';
+    button.dataset.accountToggle = 'true';
+    button.innerHTML = accountAvatar(user, 'user-avatar-mini') +
+      '<span class="user-trigger-copy"><strong>' + escapeText(profile.displayName || user.login) +
+      '</strong><small class="account-role ' + accountRoleClass(user.role) + '">' + escapeText(user.role) + '</small></span><span>⌄</span>';
+    topButton.replaceWith(button);
   }
 
+  const dropdown = qs('#account-dropdown');
+  if (dropdown) {
+    dropdown.innerHTML =
+      '<a href="/account#profile" data-account-link="profile">Мой профиль <span>›</span></a>' +
+      '<a href="/account#messages" data-account-link="messages">Сообщения <span>›</span></a>' +
+      '<a href="/account#friends" data-account-link="friends">Друзья <span>›</span></a>' +
+      '<a href="/account#settings" data-account-link="settings">Настройки <span>›</span></a>' +
+      '<a href="/account#balance" data-account-link="balance">Баланс: ' + formatAccountMoney(user.balance) + ' <span>›</span></a>' +
+      '<a href="/account#notifications" data-account-link="notifications">Уведомления <span>›</span></a>' +
+      '<a href="/account#services" data-account-link="services">Услуги <span>›</span></a>' +
+      '<button type="button" data-logout>Выход <span>›</span></button>';
+  }
   const authPanel = qs('#auth-panel');
   if (authPanel) {
     authPanel.innerHTML =
       '<h3>Личный кабинет</h3><div class="auth-profile"><strong>' +
-      escapeText(user.login) + '</strong><span>Баланс: ' +
+      escapeText(profile.displayName || user.login) + '</strong><span>Баланс: ' +
       formatAccountMoney(user.balance) +
       '</span><a class="auth-button auth-red" href="/account">Открыть аккаунт</a>' +
       '<button class="auth-button auth-outline" type="button" data-logout>Выйти</button></div>';
@@ -1557,7 +1820,13 @@ function applyCurrentUser(user, orders) {
 
   const loginInput = qs('#order-form input[name="login"]');
   if (loginInput && !loginInput.value) loginInput.value = user.login;
-  renderAccount(user, orders);
+}
+
+async function loadAccountData() {
+  const response = await fetch('/api/account/data');
+  const data = await response.json();
+  if (!data.ok) throw new Error(data.message || 'Не удалось загрузить аккаунт');
+  renderAccount(data);
 }
 
 async function bootSession() {
@@ -1565,7 +1834,8 @@ async function bootSession() {
     const response = await fetch('/api/me');
     const data = await response.json();
     if (data.ok) {
-      applyCurrentUser(data.user, data.orders || []);
+      applyCurrentUser(data.user);
+      if (qs('#account-panel')) await loadAccountData();
       return;
     }
   } catch {}
@@ -1602,6 +1872,40 @@ function receiptDataUrl(file) {
         const result = canvas.toDataURL('image/jpeg', 0.72);
         if (result.length > 1600000) {
           reject(new Error('После обработки чек всё ещё слишком большой'));
+          return;
+        }
+        resolve(result);
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function avatarDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      reject(new Error('Выберите изображение аватара'));
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      reject(new Error('Файл слишком большой. Максимум 6 МБ'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать аватар'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('Не удалось открыть изображение'));
+      image.onload = () => {
+        const scale = Math.min(1, 512 / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        const result = canvas.toDataURL('image/jpeg', 0.72);
+        if (result.length > 450000) {
+          reject(new Error('Аватар после обработки превышает 450 КБ'));
           return;
         }
         resolve(result);
@@ -1888,6 +2192,124 @@ qs('#ticket-form')?.addEventListener('submit', async (event) => {
   result.textContent = data.message;
 });
 
+qs('#mobile-menu-toggle')?.addEventListener('click', () => {
+  qs('#main-nav')?.classList.toggle('show');
+});
+
+window.addEventListener('hashchange', () => {
+  if (accountState && qs('#account-panel')) renderAccount(accountState);
+});
+
+document.addEventListener('click', async (event) => {
+  const accountToggle = event.target.closest('[data-account-toggle]');
+  const dropdown = qs('#account-dropdown');
+  if (accountToggle && dropdown) {
+    event.preventDefault();
+    dropdown.hidden = !dropdown.hidden;
+    qs('#main-nav')?.classList.remove('show');
+    return;
+  }
+
+  const accountLink = event.target.closest('[data-account-link]');
+  if (accountLink) {
+    const section = accountLink.dataset.accountLink;
+    if (location.pathname === '/account') {
+      event.preventDefault();
+      if (location.hash === '#' + section) renderAccount(accountState);
+      else location.hash = section;
+    }
+    if (dropdown) dropdown.hidden = true;
+    qs('#main-nav')?.classList.remove('show');
+    return;
+  }
+
+  if (dropdown && !dropdown.hidden && !event.target.closest('#account-dropdown')) dropdown.hidden = true;
+
+  const friendButton = event.target.closest('[data-friend-action]');
+  if (friendButton) {
+    friendButton.disabled = true;
+    const data = await postJson('/api/account/friend', {
+      action: friendButton.dataset.friendAction,
+      login: friendButton.dataset.friendLogin
+    });
+    if (!data.ok) alert(data.message);
+    await loadAccountData();
+  }
+});
+
+document.addEventListener('submit', async (event) => {
+  const form = event.target;
+  if (form.id === 'profile-form') {
+    event.preventDefault();
+    const result = qs('#profile-result');
+    const values = formData(form);
+    const payload = {
+      displayName: values.displayName,
+      firstName: values.firstName,
+      birthDate: values.birthDate,
+      serverNick: values.serverNick,
+      discord: values.discord,
+      bio: values.bio,
+      removeAvatar: Boolean(values.removeAvatar)
+    };
+    const file = qs('#avatar-input')?.files?.[0];
+    try {
+      result.className = 'result';
+      result.textContent = 'Сохраняем...';
+      if (file) payload.avatarData = await avatarDataUrl(file);
+      const data = await postJson('/api/account/profile', payload);
+      result.className = 'result ' + (data.ok ? 'success' : 'error');
+      result.textContent = data.message;
+      if (data.ok) {
+        applyCurrentUser(data.user);
+        await loadAccountData();
+      }
+    } catch (error) {
+      result.className = 'result error';
+      result.textContent = error.message;
+    }
+    return;
+  }
+
+  if (form.id === 'wall-form') {
+    event.preventDefault();
+    const result = qs('#wall-result');
+    const data = await postJson('/api/account/wall', formData(form));
+    result.className = 'result ' + (data.ok ? 'success' : 'error');
+    result.textContent = data.message;
+    if (data.ok) await loadAccountData();
+    return;
+  }
+
+  if (form.id === 'message-form') {
+    event.preventDefault();
+    const result = qs('#message-result');
+    const data = await postJson('/api/account/message', formData(form));
+    result.className = 'result ' + (data.ok ? 'success' : 'error');
+    result.textContent = data.message;
+    if (data.ok) await loadAccountData();
+    return;
+  }
+
+  if (form.id === 'friend-search-form') {
+    event.preventDefault();
+    const result = qs('#friend-result');
+    const query = new FormData(form).get('q') || '';
+    const response = await fetch('/api/account/users?q=' + encodeURIComponent(query));
+    const data = await response.json();
+    result.className = 'result ' + (data.ok ? 'success' : 'error');
+    result.textContent = data.ok ? 'Найдено: ' + data.users.length : data.message;
+    const list = qs('#friend-search-results');
+    if (list) {
+      list.innerHTML = data.ok && data.users.length ? data.users.map((user) =>
+        '<article class="account-result"><div><strong>' + escapeText(user.profile?.displayName || user.login) +
+        '</strong><small>' + escapeText(user.login) + '</small></div><button type="button" data-friend-action="add" data-friend-login="' +
+        escapeAttr(user.login) + '">Добавить</button></article>'
+      ).join('') : '<div class="account-empty">Пользователи не найдены.</div>';
+    }
+  }
+});
+
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-logout]');
   if (!button) return;
@@ -1926,6 +2348,189 @@ async function handleApi(req, res, pathname) {
       }))
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
     json(res, 200, { ok: true, user: publicUser(user), orders });
+    return;
+  }
+
+  if (pathname === "/api/account/data" && req.method === "GET") {
+    const db = await readDb();
+    const user = currentUser(req, db);
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    const friendships = db.friendships.filter((item) => friendshipIncludes(item, user.login));
+    const friends = friendships
+      .map((item) => findUser(db, otherFriendLogin(item, user.login)))
+      .filter(Boolean)
+      .map(publicMember);
+    const messages = db.messages
+      .filter((item) => [item.from, item.to].some((login) => String(login).toLowerCase() === user.login.toLowerCase()))
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+      .slice(0, 100);
+    const notifications = db.notifications
+      .filter((item) => String(item.login).toLowerCase() === user.login.toLowerCase())
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+      .slice(0, 100);
+    const wallPosts = db.wallPosts
+      .filter((item) => String(item.login).toLowerCase() === user.login.toLowerCase())
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+      .slice(0, 100);
+    const services = db.orders
+      .filter((order) => String(order.login || "").toLowerCase() === user.login.toLowerCase())
+      .map((order) => ({
+        id: order.id,
+        serviceName: order.serviceName,
+        tariffName: order.tariffName,
+        price: order.price,
+        status: order.status,
+        createdAt: order.createdAt
+      }))
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    json(res, 200, {
+      ok: true,
+      user: publicUser(user),
+      friends,
+      messages,
+      notifications,
+      wallPosts,
+      services
+    });
+    return;
+  }
+
+  if (pathname === "/api/account/users" && req.method === "GET") {
+    const db = await readDb();
+    const user = currentUser(req, db);
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const users = query.length < 2 ? [] : db.users
+      .filter((item) => item.login.toLowerCase() !== user.login.toLowerCase())
+      .filter((item) => [item.login, item.profile?.displayName, item.profile?.serverNick].join(" ").toLowerCase().includes(query))
+      .slice(0, 8)
+      .map(publicMember);
+    json(res, 200, { ok: true, users });
+    return;
+  }
+
+  if (pathname === "/api/account/profile" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const db = await readDb();
+    const user = currentUser(req, db);
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    const birthDate = String(data.birthDate || "").trim();
+    if (birthDate && !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) {
+      json(res, 400, { ok: false, message: "Некорректная дата рождения" });
+      return;
+    }
+    if (data.avatarData && !validAvatarData(data.avatarData)) {
+      json(res, 400, { ok: false, message: "Аватар должен быть изображением размером до 450 КБ" });
+      return;
+    }
+    user.profile ||= {};
+    user.profile.displayName = String(data.displayName || user.login).trim().slice(0, 60) || user.login;
+    user.profile.firstName = String(data.firstName || "").trim().slice(0, 40);
+    user.profile.birthDate = birthDate;
+    user.profile.serverNick = String(data.serverNick || "").trim().slice(0, 32);
+    user.profile.discord = String(data.discord || "").trim().slice(0, 60);
+    user.profile.bio = String(data.bio || "").trim().slice(0, 500);
+    if (data.removeAvatar) user.profile.avatarData = "";
+    else if (data.avatarData) user.profile.avatarData = data.avatarData;
+    await writeDb(db);
+    json(res, 200, { ok: true, message: "Профиль сохранён", user: publicUser(user) });
+    return;
+  }
+
+  if (pathname === "/api/account/wall" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const db = await readDb();
+    const user = currentUser(req, db);
+    const text = String(data.text || "").trim();
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    if (!text || text.length > 1000) {
+      json(res, 400, { ok: false, message: "Сообщение должно содержать от 1 до 1000 символов" });
+      return;
+    }
+    const post = { id: randomUUID(), login: user.login, text, createdAt: new Date().toISOString() };
+    db.wallPosts.push(post);
+    await writeDb(db);
+    json(res, 201, { ok: true, message: "Запись опубликована", post });
+    return;
+  }
+
+  if (pathname === "/api/account/friend" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const db = await readDb();
+    const user = currentUser(req, db);
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    const target = findUser(db, data.login);
+    if (!target || target.login.toLowerCase() === user.login.toLowerCase()) {
+      json(res, 404, { ok: false, message: "Пользователь не найден" });
+      return;
+    }
+    const existing = db.friendships.find((item) =>
+      friendshipIncludes(item, user.login) && friendshipIncludes(item, target.login)
+    );
+    if (data.action === "remove") {
+      db.friendships = db.friendships.filter((item) => item !== existing);
+      await writeDb(db);
+      json(res, 200, { ok: true, message: `${target.login} удалён из друзей` });
+      return;
+    }
+    if (!existing) {
+      db.friendships.push({
+        id: randomUUID(),
+        users: [user.login, target.login],
+        createdAt: new Date().toISOString()
+      });
+      addNotification(db, target.login, `${user.login} добавил вас в друзья`, "friend");
+      await writeDb(db);
+    }
+    json(res, 200, { ok: true, message: `${target.login} добавлен в друзья` });
+    return;
+  }
+
+  if (pathname === "/api/account/message" && req.method === "POST") {
+    const data = await readRequestBody(req);
+    const db = await readDb();
+    const user = currentUser(req, db);
+    const target = findUser(db, data.to);
+    const text = String(data.text || "").trim();
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    if (!target || target.login.toLowerCase() === user.login.toLowerCase()) {
+      json(res, 404, { ok: false, message: "Получатель не найден" });
+      return;
+    }
+    if (!text || text.length > 1000) {
+      json(res, 400, { ok: false, message: "Сообщение должно содержать от 1 до 1000 символов" });
+      return;
+    }
+    const message = {
+      id: randomUUID(),
+      from: user.login,
+      to: target.login,
+      text,
+      createdAt: new Date().toISOString()
+    };
+    db.messages.push(message);
+    addNotification(db, target.login, `Новое сообщение от ${user.login}`, "message");
+    await writeDb(db);
+    json(res, 201, { ok: true, message: "Сообщение отправлено", item: message });
     return;
   }
 
@@ -1976,9 +2581,19 @@ async function handleApi(req, res, pathname) {
       balance: 0,
       active: true,
       role: "Пользователь",
+      profile: {
+        displayName: login,
+        firstName: "",
+        birthDate: "",
+        serverNick: "",
+        discord: "",
+        bio: "",
+        avatarData: ""
+      },
       createdAt: new Date().toISOString()
     };
     db.users.push(user);
+    addNotification(db, user.login, `Добро пожаловать на ${BRAND.name}! Заполните профиль и укажите игровой ник.`, "welcome");
     const token = createUserSession(db, user);
     await writeDb(db);
     setSessionCookie(req, res, token);
