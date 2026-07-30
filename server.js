@@ -1,5 +1,5 @@
 import dgram from "node:dgram";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -25,6 +25,8 @@ const MANUAL_PAYMENT_CONFIGURED = PAYMENT_CARD_DIGITS.length >= 12
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
 const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const SESSION_COOKIE = "oldera_session";
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const BRAND = {
   name: "OLDERA.UZ",
@@ -291,6 +293,7 @@ async function staticAsset(res, requestPath) {
 
 function normalizeDb(db = {}) {
   db.users ||= [];
+  db.sessions ||= [];
   db.orders ||= [];
   db.tickets ||= [];
   db.topups ||= [];
@@ -396,6 +399,103 @@ function safeEqualText(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const digest = scryptSync(String(password), salt, 64).toString("hex");
+  return `scrypt$${salt}$${digest}`;
+}
+
+function verifyPassword(password, storedPassword) {
+  const stored = String(storedPassword || "");
+  if (!stored.startsWith("scrypt$")) return safeEqualText(password, stored);
+
+  const [, salt, expectedHex] = stored.split("$");
+  if (!salt || !expectedHex) return false;
+  const actual = scryptSync(String(password), salt, 64);
+  const expected = Buffer.from(expectedHex, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function parseCookies(req) {
+  return String(req.headers.cookie || "").split(";").reduce((cookies, part) => {
+    const separator = part.indexOf("=");
+    if (separator < 0) return cookies;
+    const name = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    try {
+      cookies[name] = decodeURIComponent(value);
+    } catch {
+      cookies[name] = value;
+    }
+    return cookies;
+  }, {});
+}
+
+function sessionHash(token) {
+  return createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function isSecureRequest(req) {
+  return String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https"
+    || Boolean(req.socket.encrypted);
+}
+
+function setSessionCookie(req, res, token) {
+  const attributes = [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+  ];
+  if (isSecureRequest(req)) attributes.push("Secure");
+  res.setHeader("set-cookie", attributes.join("; "));
+}
+
+function clearSessionCookie(req, res) {
+  const attributes = [
+    `${SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0"
+  ];
+  if (isSecureRequest(req)) attributes.push("Secure");
+  res.setHeader("set-cookie", attributes.join("; "));
+}
+
+function createUserSession(db, user) {
+  const now = Date.now();
+  db.sessions = db.sessions.filter((session) => Date.parse(session.expiresAt) > now);
+  const token = randomBytes(32).toString("base64url");
+  db.sessions.push({
+    id: sessionHash(token),
+    userLogin: user.login,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + SESSION_TTL_MS).toISOString()
+  });
+  return token;
+}
+
+function currentUser(req, db) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
+  const now = Date.now();
+  const session = db.sessions.find((item) => item.id === sessionHash(token) && Date.parse(item.expiresAt) > now);
+  if (!session) return null;
+  return db.users.find((user) => user.login.toLowerCase() === String(session.userLogin).toLowerCase()) || null;
+}
+
+function publicUser(user) {
+  return {
+    login: user.login,
+    email: user.email,
+    balance: Number(user.balance || 0),
+    role: user.role || "Пользователь",
+    createdAt: user.createdAt
+  };
 }
 
 function hasValidAdminPin(req, data = {}) {
@@ -714,7 +814,7 @@ function pageShell({ title, pathName = "/", content }) {
 <body>
   <header class="topbar">
     <nav class="nav">${TOP_NAV.map(([href, label]) => `<a class="${active(href)}" href="${href}">${label}</a>`).join("")}</nav>
-    <button class="user-mini" data-modal="login">Войти на сайт</button>
+    <button class="user-mini" id="user-menu-button" data-modal="login">Войти на сайт</button>
   </header>
   <div class="crumb">Главная страница${pathName === "/" ? "" : " / " + escapeHtml(title)}</div>
   <main class="layout">
@@ -771,7 +871,7 @@ function pageShell({ title, pathName = "/", content }) {
 }
 
 function sidebarAuthHtml() {
-  return `<section class="panel auth-panel">
+  return `<section class="panel auth-panel" id="auth-panel">
     <h3>Авторизация</h3>
     <button class="auth-button auth-red" data-modal="login">Войти на сайт</button>
     <button class="auth-button auth-vk" data-modal="login">VK Войти через VK</button>
@@ -1190,6 +1290,16 @@ function supportPage() {
     </form>`);
 }
 
+function accountPage() {
+  return pageShell({
+    title: "Личный кабинет",
+    pathName: "/account",
+    content: `${serverTable()}<section class="panel account-panel" id="account-panel">
+      <div class="account-loading">Загружаем аккаунт...</div>
+    </section>`
+  });
+}
+
 function chatPage() {
   return pageShell({
     title: "Чат сервера",
@@ -1251,6 +1361,7 @@ function styles() {
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:22px;box-shadow:0 18px 45px #0008}.panel h2,.panel h3{margin:0 0 16px}.panel a{display:block;color:#aebbd0;padding:8px 0;border-bottom:1px solid #223043}.panel small{display:block;color:var(--muted);margin-top:4px}.main{display:grid;gap:24px}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.icon-btn{background:#182336;border:1px solid #33465f;color:#dbe8f8;border-radius:7px;padding:7px 11px;cursor:pointer}
 .table-wrap{overflow:auto;border-radius:8px;border:1px solid #2d3b4e}table{width:100%;border-collapse:collapse;background:#0d1521}th,td{border-bottom:1px solid #293648;border-right:1px solid #293648;padding:12px 14px;text-align:left;font-size:14px}th{color:#c4cee0;background:#111a27}.ip{color:#eaf4ff;font-weight:800}.meter{position:relative;display:block;min-width:86px;height:30px;background:#761927;border:1px solid #b53b52;border-radius:4px;overflow:hidden;text-align:center}.meter i,.total i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--cyan),var(--cyan) 4px,#62f0e1 4px,#62f0e1 8px)}.meter b{position:absolute;inset:0;display:grid;place-items:center;font-weight:500}.actions{white-space:nowrap}.small-btn{display:inline-grid!important;place-items:center;width:34px;height:28px;margin-right:6px;border-radius:4px;border:1px solid #ffffff30}.green{background:#176b35}.red{background:#7d1c2d}.gold{background:#a88929}.total{height:32px;position:relative;background:#7d1b2b;border:1px solid #bf3a51;border-radius:5px;overflow:hidden;margin-top:10px;text-align:center}.total span{position:absolute;inset:0;display:grid;place-items:center}
 .empty-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.player-card{min-height:132px;border:1px solid #2b3b50;border-radius:8px;background:#0e1825;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.player-card span{color:#ffce48}.player-card b{margin:10px 0}.player-card small,.empty,.note,.policy{color:var(--muted);line-height:1.5}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status-pill{color:#9decc5;background:#143525;border:1px solid #26754f;border-radius:999px;padding:6px 10px;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:grid;gap:7px;color:#cbd7e7}.form-grid .wide{grid-column:1/-1}.stack-form{display:grid;gap:12px}.service-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:18px 0 24px}.service-card{display:grid;grid-template-columns:70px 1fr;gap:14px;align-items:start;background:#0c1624;border:1px solid #2f4056;border-radius:8px;padding:14px;position:relative;overflow:hidden}.service-card:before{content:"";position:absolute;inset:0;opacity:.16;background:linear-gradient(135deg,#2de2e6,#f84aa7,#ffb000);pointer-events:none}.service-card h3{margin:0 0 6px}.service-card strong{display:block;color:#fff;margin-bottom:8px}.service-card ul{margin:0;padding-left:18px;color:#b9c7d9;font-size:13px;line-height:1.55}.service-art{width:64px;height:64px;border-radius:8px;display:grid;place-items:center;background:#152033;border:1px solid #ffffff24;box-shadow:0 0 22px #000 inset}.service-art span{font-weight:900;font-size:13px;letter-spacing:.04em}.service-card.cyan .service-art{color:#55fff1;box-shadow:0 0 28px #26d6d0}.service-card.pink .service-art{color:#ff69ba;box-shadow:0 0 28px #f4469b}.service-card.gold .service-art{color:#ffe06c;box-shadow:0 0 28px #d6a72a}.service-card.green .service-art{color:#8dffa9;box-shadow:0 0 28px #27b05b}.service-card.orange .service-art{color:#ffb269;box-shadow:0 0 28px #f08b35}.balance-panel h2{margin-bottom:8px}input,select,textarea{width:100%;background:#0b1320;color:var(--text);border:1px solid #2d3d52;border-radius:6px;padding:12px}textarea{min-height:120px;resize:vertical}.primary{border:0;border-radius:7px;background:linear-gradient(135deg,#28c2e8,#f04c9c);color:white;padding:12px 18px;font-weight:800;cursor:pointer}.result{align-self:center}.success{color:#7df0a6}.error{color:#ff8998}.empty-cell{text-align:center;color:var(--muted)}.rules{line-height:1.9}
+.account-panel{display:grid;gap:22px}.account-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-bottom:20px;border-bottom:1px solid #293648}.account-person{display:flex;align-items:center;gap:16px;min-width:0}.account-avatar{width:64px;height:64px;flex:0 0 64px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#25bfd8,#f0447e);color:#fff;font-size:28px;font-weight:900}.account-person h2{margin:0 0 5px}.account-person p{margin:0;color:var(--muted);overflow-wrap:anywhere}.account-actions{display:flex;gap:10px}.account-actions a,.account-actions button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:9px 14px;border:1px solid #3b4b61;background:#142033;color:#fff;font-weight:700;cursor:pointer}.account-actions button{border-color:#a92d40;background:#641522}.account-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.account-stat{padding:17px;background:#0b1421;border:1px solid #29394d}.account-stat span{display:block;margin-bottom:7px;color:var(--muted);font-size:13px}.account-stat strong{display:block;color:#fff;overflow-wrap:anywhere}.account-orders{display:grid;gap:10px}.account-orders h3{margin:0}.account-order{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:14px;background:#0b1421;border:1px solid #29394d}.account-order strong,.account-order small{display:block}.account-order small{margin-top:5px;color:var(--muted)}.account-order-status{align-self:center;color:#7df0a6;font-weight:700}.account-loading{padding:30px 0;text-align:center;color:var(--muted)}.auth-profile{display:grid;gap:8px}.auth-profile strong{font-size:19px;color:#fff;overflow-wrap:anywhere}.auth-profile span{color:var(--muted)}.auth-profile .auth-button{display:flex;align-items:center;justify-content:center;text-decoration:none}
 .modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:20px}.modal.show{display:flex}.dialog{width:min(420px,100%);background:#111a27;border:1px solid #34445a;border-radius:10px;padding:24px;position:relative}.dialog form{display:grid;gap:12px}.close{position:absolute;right:14px;top:10px;background:transparent;border:0;color:white;font-size:28px;cursor:pointer}
 .pay-form{margin-top:18px;padding-top:18px;border-top:1px solid #273444}.pay-link{display:inline-block!important;margin-top:8px;color:#7df0ff!important;border-bottom:0!important}.inline-action{border:0;border-radius:5px;background:#b99a34;color:white;padding:8px 10px;font-weight:800;cursor:pointer}
 .topbar{background:#202028cc;backdrop-filter:blur(10px);border-bottom:1px solid #353441;box-shadow:0 8px 28px #0008}.nav a{color:#c7ceda}.nav a.active,.nav a:hover{background:linear-gradient(135deg,#39b9df,#8b5fd8 52%,#e85854);border-radius:0 0 7px 7px}.user-mini{right:22px;border:1px solid #4a5262;border-radius:6px;padding:8px 14px;background:#141a24;color:#fff}
@@ -1336,7 +1447,7 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 .main{gap:30px}
 }
 @media (max-width:900px){
-.home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.card-requisites strong{font-size:17px}.admin-login{grid-template-columns:1fr}.admin-order{grid-template-columns:1fr}.admin-receipt{width:100%;height:250px}.admin-order-title{display:grid}.admin-order-meta{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}
+.home-promo{height:280px;min-height:280px;padding:26px 20px}.home-promo h2{font-size:26px}.home-promo p{font-size:14px}.purchase-panel{padding:22px 16px}.purchase-layout{grid-template-columns:1fr;gap:24px}.service-info-media{height:230px}.buyer-fields{grid-template-columns:1fr}.card-requisites strong{font-size:17px}.admin-login{grid-template-columns:1fr}.admin-order{grid-template-columns:1fr}.admin-receipt{width:100%;height:250px}.admin-order-title{display:grid}.admin-order-meta{grid-template-columns:1fr}.rules-page{padding:16px 12px;gap:18px}.rules-hero{min-height:110px;padding:24px 20px}.rules-hero h1,.rules-server-title{font-size:25px}.rule-section{padding:19px 14px}.rule-section>h2{font-size:23px}.rule-row{grid-template-columns:42px minmax(0,1fr);padding:13px 10px}.rule-row h3{font-size:15px}.account-head{align-items:flex-start;flex-direction:column}.account-actions{width:100%}.account-actions a,.account-actions button{flex:1}.account-stats{grid-template-columns:1fr}.account-order{grid-template-columns:1fr}.account-order-status{justify-self:start}
 }
 `;
 }
@@ -1381,6 +1492,90 @@ function escapeText(value) {
   const div = document.createElement('div');
   div.textContent = value == null ? '' : String(value);
   return div.innerHTML;
+}
+
+function formatAccountMoney(value) {
+  return Number(value || 0).toLocaleString('ru-RU') + ' сум';
+}
+
+function renderAccount(user, orders) {
+  const panel = qs('#account-panel');
+  if (!panel) return;
+  const orderLabels = {
+    'pending-payment-review': 'Ожидает проверки',
+    'payment-confirming': 'Выполняется выдача',
+    'paid-issued': 'Оплачен и выдан',
+    'paid-pending-server-integration': 'Выдача ожидает',
+    rejected: 'Отклонён'
+  };
+  const orderRows = (orders || []).length
+    ? orders.map((order) => '<article class="account-order"><div><strong>' +
+        escapeText(order.serviceName || order.service || 'Заказ') + '</strong><small>' +
+        escapeText(order.tariffName || '') + ' · ' +
+        Number(order.price || 0).toLocaleString('ru-RU') + ' сум · ' +
+        new Date(order.createdAt).toLocaleString('ru-RU') +
+        '</small></div><span class="account-order-status">' +
+        escapeText(orderLabels[order.status] || order.status) +
+        '</span></article>').join('')
+    : '<p class="empty">Заказов пока нет.</p>';
+  panel.innerHTML =
+    '<div class="account-head"><div class="account-person"><div class="account-avatar">' +
+      escapeText(user.login.slice(0, 1).toUpperCase()) +
+      '</div><div><h2>' + escapeText(user.login) + '</h2><p>' +
+      escapeText(user.email) +
+      '</p></div></div><div class="account-actions"><a href="/store">Перейти в магазин</a>' +
+      '<button type="button" data-logout>Выйти</button></div></div>' +
+    '<div class="account-stats">' +
+      '<div class="account-stat"><span>Баланс</span><strong>' + formatAccountMoney(user.balance) + '</strong></div>' +
+      '<div class="account-stat"><span>Группа</span><strong>' + escapeText(user.role) + '</strong></div>' +
+      '<div class="account-stat"><span>Дата регистрации</span><strong>' +
+        new Date(user.createdAt).toLocaleDateString('ru-RU') +
+      '</strong></div>' +
+    '</div><div class="account-orders"><h3>Мои заказы</h3>' + orderRows + '</div>';
+}
+
+function applyCurrentUser(user, orders) {
+  const topButton = qs('#user-menu-button');
+  if (topButton) {
+    const link = document.createElement('a');
+    link.id = 'user-menu-button';
+    link.className = 'user-mini';
+    link.href = '/account';
+    link.textContent = user.login;
+    topButton.replaceWith(link);
+  }
+
+  const authPanel = qs('#auth-panel');
+  if (authPanel) {
+    authPanel.innerHTML =
+      '<h3>Личный кабинет</h3><div class="auth-profile"><strong>' +
+      escapeText(user.login) + '</strong><span>Баланс: ' +
+      formatAccountMoney(user.balance) +
+      '</span><a class="auth-button auth-red" href="/account">Открыть аккаунт</a>' +
+      '<button class="auth-button auth-outline" type="button" data-logout>Выйти</button></div>';
+  }
+
+  const loginInput = qs('#order-form input[name="login"]');
+  if (loginInput && !loginInput.value) loginInput.value = user.login;
+  renderAccount(user, orders);
+}
+
+async function bootSession() {
+  try {
+    const response = await fetch('/api/me');
+    const data = await response.json();
+    if (data.ok) {
+      applyCurrentUser(data.user, data.orders || []);
+      return;
+    }
+  } catch {}
+
+  const panel = qs('#account-panel');
+  if (panel) {
+    panel.innerHTML = '<h2>Войдите в аккаунт</h2><p class="note">Для просмотра личного кабинета нужна авторизация.</p>' +
+      '<button class="primary" id="account-login-button" type="button">Войти на сайт</button>';
+    qs('#account-login-button')?.addEventListener('click', () => openModal('login'));
+  }
 }
 
 function receiptDataUrl(file) {
@@ -1471,6 +1666,7 @@ qs('#register-form')?.addEventListener('submit', async (event) => {
   const data = await postJson('/api/register', formData(event.currentTarget));
   result.className = 'result ' + (data.ok ? 'success' : 'error');
   result.textContent = data.message;
+  if (data.ok) location.assign(data.redirect || '/account');
 });
 
 qs('#login-form')?.addEventListener('submit', async (event) => {
@@ -1479,6 +1675,7 @@ qs('#login-form')?.addEventListener('submit', async (event) => {
   const data = await postJson('/api/login', formData(event.currentTarget));
   result.className = 'result ' + (data.ok ? 'success' : 'error');
   result.textContent = data.message;
+  if (data.ok) location.assign(data.redirect || '/account');
 });
 
 qs('#order-form')?.addEventListener('submit', async (event) => {
@@ -1690,12 +1887,58 @@ qs('#ticket-form')?.addEventListener('submit', async (event) => {
   result.className = 'result ' + (data.ok ? 'success' : 'error');
   result.textContent = data.message;
 });
+
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-logout]');
+  if (!button) return;
+  button.disabled = true;
+  await postJson('/api/logout', {});
+  location.assign('/');
+});
+
+bootSession();
 `;
 }
 
 async function handleApi(req, res, pathname) {
   if (pathname === "/api/server-status" && req.method === "GET") {
     json(res, 200, await serverStatus());
+    return;
+  }
+
+  if (pathname === "/api/me" && req.method === "GET") {
+    const db = await readDb();
+    const user = currentUser(req, db);
+    if (!user) {
+      json(res, 401, { ok: false, message: "Требуется авторизация" });
+      return;
+    }
+    const orders = db.orders
+      .filter((order) => String(order.login || "").toLowerCase() === user.login.toLowerCase())
+      .map((order) => ({
+        id: order.id,
+        service: order.service,
+        serviceName: order.serviceName,
+        tariffName: order.tariffName,
+        price: order.price,
+        status: order.status,
+        createdAt: order.createdAt
+      }))
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    json(res, 200, { ok: true, user: publicUser(user), orders });
+    return;
+  }
+
+  if (pathname === "/api/logout" && req.method === "POST") {
+    const db = await readDb();
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (token) {
+      const id = sessionHash(token);
+      db.sessions = db.sessions.filter((session) => session.id !== id);
+      await writeDb(db);
+    }
+    clearSessionCookie(req, res);
+    json(res, 200, { ok: true, message: "Вы вышли из аккаунта" });
     return;
   }
 
@@ -1714,6 +1957,10 @@ async function handleApi(req, res, pathname) {
       json(res, 400, { ok: false, message: "Пароли не совпадают" });
       return;
     }
+    if (login.length < 3 || password.length < 6) {
+      json(res, 400, { ok: false, message: "Логин должен быть от 3 символов, пароль — от 6 символов" });
+      return;
+    }
 
     const db = await readDb();
     if (db.users.some((user) => user.login.toLowerCase() === login.toLowerCase() || user.email === email)) {
@@ -1721,9 +1968,26 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
-    db.users.push({ login, email, password, balance: 0, active: false, createdAt: new Date().toISOString() });
+    const user = {
+      id: randomUUID(),
+      login,
+      email,
+      password: hashPassword(password),
+      balance: 0,
+      active: true,
+      role: "Пользователь",
+      createdAt: new Date().toISOString()
+    };
+    db.users.push(user);
+    const token = createUserSession(db, user);
     await writeDb(db);
-    json(res, 200, { ok: true, message: "Регистрация принята. Аккаунт создан в тестовом режиме." });
+    setSessionCookie(req, res, token);
+    json(res, 201, {
+      ok: true,
+      message: "Аккаунт создан. Открываем личный кабинет...",
+      redirect: "/account",
+      user: publicUser(user)
+    });
     return;
   }
 
@@ -2147,12 +2411,26 @@ async function handleApi(req, res, pathname) {
     const login = String(data.login || "").trim();
     const password = String(data.password || "");
     const db = await readDb();
-    const user = db.users.find((item) => item.login.toLowerCase() === login.toLowerCase() && item.password === password);
+    const user = db.users.find((item) =>
+      (item.login.toLowerCase() === login.toLowerCase() || item.email === login.toLowerCase())
+      && verifyPassword(password, item.password)
+    );
     if (!user) {
       json(res, 401, { ok: false, message: "Неверный логин или пароль" });
       return;
     }
-    json(res, 200, { ok: true, message: user.active ? "Вы вошли" : "Аккаунт найден. Активация будет подключена позже." });
+    if (!String(user.password).startsWith("scrypt$")) user.password = hashPassword(password);
+    user.active = true;
+    user.role ||= "Пользователь";
+    const token = createUserSession(db, user);
+    await writeDb(db);
+    setSessionCookie(req, res, token);
+    json(res, 200, {
+      ok: true,
+      message: "Вы вошли. Открываем личный кабинет...",
+      redirect: "/account",
+      user: publicUser(user)
+    });
     return;
   }
 
@@ -2258,6 +2536,7 @@ async function handleApi(req, res, pathname) {
 function routePage(pathname) {
   if (pathname === "/") return homePage();
   if (pathname === "/store") return storePage();
+  if (pathname === "/account") return accountPage();
   if (pathname === "/balance") return balancePage();
   if (pathname === "/admin/orders") return adminOrdersPage();
   if (pathname === "/rules_public" || pathname === "/pages/rules") return rulesPage();

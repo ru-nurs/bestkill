@@ -5,6 +5,7 @@ const port = Number(process.env.PORT || 3000);
 const origin = `http://localhost:${port}`;
 const seedPaths = [
   "/",
+  "/account",
   "/store",
   "/balance",
   "/admin/orders",
