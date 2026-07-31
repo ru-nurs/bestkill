@@ -362,7 +362,10 @@ async function amxbansQuery(sql, params = []) {
 
 async function amxbansTableExists(table) {
   if (!AMXBANS_CONFIGURED) return false;
-  const rows = await amxbansQuery("SHOW TABLES LIKE ?", [table]);
+  const rows = await amxbansQuery(
+    "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1",
+    [table]
+  );
   return rows.length > 0;
 }
 
