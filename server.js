@@ -672,10 +672,12 @@ async function sendRconCommand(command) {
   return new Promise((resolve) => {
     const socket = dgram.createSocket("udp4");
     let done = false;
+    let replyTimer = null;
     const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearTimeout(replyTimer);
       socket.close();
       resolve(result);
     };
@@ -689,7 +691,19 @@ async function sendRconCommand(command) {
         return;
       }
       const packet = Buffer.from(`\xff\xff\xff\xffrcon ${challenge} "${password}" ${command}\n`, "binary");
-      socket.once("message", (reply) => finish({ ok: true, message: reply.toString("utf8").replace(/^\xff{4}/, "").trim() || "RCON command sent" }));
+      const replies = [];
+      socket.on("message", (reply) => {
+        const text = reply.toString("utf8").replace(/^\xff{4}/, "").trim();
+        if (text) replies.push(text);
+        clearTimeout(replyTimer);
+        replyTimer = setTimeout(() => {
+          const message = replies.join("\n").trim() || "RCON command sent";
+          finish({
+            ok: !/bad rcon_password|invalid password/i.test(message),
+            message
+          });
+        }, 350);
+      });
       socket.send(packet, port, host);
     });
     socket.send(Buffer.from("\xff\xff\xff\xffchallenge rcon\n", "binary"), port, host);
