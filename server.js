@@ -25,6 +25,14 @@ const MANUAL_PAYMENT_CONFIGURED = PAYMENT_CARD_DIGITS.length >= 12
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
 const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const AMXBANS_DATABASE_URL = String(process.env.AMXBANS_DATABASE_URL || process.env.FRESHBANS_DATABASE_URL || "").trim();
+const AMXBANS_DB_HOST = String(process.env.AMXBANS_DB_HOST || process.env.FRESHBANS_DB_HOST || "").trim();
+const AMXBANS_DB_USER = String(process.env.AMXBANS_DB_USER || process.env.FRESHBANS_DB_USER || "").trim();
+const AMXBANS_DB_PASSWORD = String(process.env.AMXBANS_DB_PASSWORD || process.env.FRESHBANS_DB_PASSWORD || "");
+const AMXBANS_DB_NAME = String(process.env.AMXBANS_DB_NAME || process.env.FRESHBANS_DB_NAME || "").trim();
+const AMXBANS_DB_PORT = Number(process.env.AMXBANS_DB_PORT || process.env.FRESHBANS_DB_PORT || 3306);
+const AMXBANS_TABLE_PREFIX = String(process.env.AMXBANS_TABLE_PREFIX || process.env.FRESHBANS_TABLE_PREFIX || "amx_").replace(/[^\w]/g, "");
+const AMXBANS_CONFIGURED = Boolean(AMXBANS_DATABASE_URL || (AMXBANS_DB_HOST && AMXBANS_DB_USER && AMXBANS_DB_NAME));
 const SESSION_COOKIE = "oldera_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -317,6 +325,45 @@ function supabaseHeaders() {
     authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
     "content-type": "application/json"
   };
+}
+
+let amxbansPool = null;
+
+async function getAmxbansPool() {
+  if (!AMXBANS_CONFIGURED) return null;
+  if (amxbansPool) return amxbansPool;
+  const mysql = await import("mysql2/promise");
+  const baseOptions = {
+    waitForConnections: true,
+    connectionLimit: 3,
+    queueLimit: 0,
+    connectTimeout: 6000,
+    charset: "utf8mb4"
+  };
+  amxbansPool = AMXBANS_DATABASE_URL
+    ? mysql.createPool({ uri: AMXBANS_DATABASE_URL, ...baseOptions })
+    : mysql.createPool({
+      host: AMXBANS_DB_HOST,
+      user: AMXBANS_DB_USER,
+      password: AMXBANS_DB_PASSWORD,
+      database: AMXBANS_DB_NAME,
+      port: AMXBANS_DB_PORT,
+      ...baseOptions
+    });
+  return amxbansPool;
+}
+
+async function amxbansQuery(sql, params = []) {
+  const pool = await getAmxbansPool();
+  if (!pool) return [];
+  const [rows] = await pool.execute(sql, params);
+  return rows;
+}
+
+async function amxbansTableExists(table) {
+  if (!AMXBANS_CONFIGURED) return false;
+  const rows = await amxbansQuery("SHOW TABLES LIKE ?", [table]);
+  return rows.length > 0;
 }
 
 async function readDb() {
@@ -769,13 +816,50 @@ async function getBans(db = null) {
   const storedBans = currentDb.bans
     .map(normalizeBan)
     .filter((ban) => !ban.bannedUntil || new Date(ban.bannedUntil).getTime() > Date.now());
-  const rconBans = await queryRconBans();
+  const [amxbans, rconBans] = await Promise.all([
+    queryAmxbansBans().catch(() => []),
+    queryRconBans()
+  ]);
   const seen = new Set();
-  return [...storedBans, ...rconBans].filter((ban) => {
+  return [...storedBans, ...amxbans, ...rconBans].filter((ban) => {
     const key = `${ban.kind || "steam"}:${ban.steamId || ban.ip || ban.player}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
+  });
+}
+
+async function queryAmxbansBans() {
+  if (!AMXBANS_CONFIGURED) return [];
+  const table = `${AMXBANS_TABLE_PREFIX}bans`;
+  if (!await amxbansTableExists(table)) return [];
+  const rows = await amxbansQuery(`SELECT * FROM \`${table}\` ORDER BY \`bid\` DESC LIMIT 250`);
+  const now = Math.floor(Date.now() / 1000);
+  return rows
+    .map((row) => normalizeAmxbansBan(row))
+    .filter((ban) => !ban.bannedUntil || Date.parse(ban.bannedUntil) > now * 1000);
+}
+
+function normalizeAmxbansBan(row) {
+  const createdSeconds = Number(row.ban_created || row.created || row.created_at || 0);
+  const lengthMinutes = Number(row.ban_length || row.length || 0);
+  const bannedAt = createdSeconds > 0 ? new Date(createdSeconds * 1000).toISOString() : new Date().toISOString();
+  const bannedUntil = lengthMinutes > 0 && createdSeconds > 0
+    ? new Date((createdSeconds + lengthMinutes * 60) * 1000).toISOString()
+    : "";
+  const steamId = String(row.player_id || row.authid || row.steamid || "").trim();
+  const ip = String(row.player_ip || row.ip || "").trim();
+  return normalizeBan({
+    id: `amxbans:${row.bid || row.id || steamId || ip}`,
+    player: row.player_nick || row.nickname || row.name || steamId || ip || "Unknown",
+    steamId,
+    ip,
+    kind: steamId ? "steam" : "ip",
+    reason: row.ban_reason || row.reason || "Бан на сервере",
+    duration: lengthMinutes > 0 ? `${lengthMinutes} min` : "permanent",
+    bannedAt,
+    bannedUntil,
+    admin: row.admin_nick || row.admin_name || row.admin_id || "server"
   });
 }
 
@@ -887,7 +971,49 @@ function activeEntitlements(db) {
     .sort((left, right) => Date.parse(right.issuedAt) - Date.parse(left.issuedAt));
 }
 
-function buildRoleGroups(db) {
+function amxAccessRole(access) {
+  const flags = String(access || "");
+  if (flags.includes("l")) return "Владелец";
+  if (flags.includes("d") || flags.includes("e") || flags.includes("f") || flags.includes("j")) return "Администратор";
+  if (flags.includes("c")) return "Модератор";
+  if (flags.includes("t") || flags.includes("b")) return "VIP";
+  return "Пользователь";
+}
+
+async function queryAmxbansPrivileges() {
+  if (!AMXBANS_CONFIGURED) return [];
+  const candidates = [`${AMXBANS_TABLE_PREFIX}amxadmins`, `${AMXBANS_TABLE_PREFIX}admins`];
+  let table = "";
+  for (const candidate of candidates) {
+    if (await amxbansTableExists(candidate)) {
+      table = candidate;
+      break;
+    }
+  }
+  if (!table) return [];
+  const rows = await amxbansQuery(`SELECT * FROM \`${table}\` ORDER BY \`id\` DESC LIMIT 250`);
+  const now = Math.floor(Date.now() / 1000);
+  return rows
+    .map((row) => {
+      const expiresRaw = Number(row.expired || row.expires || row.expire || 0);
+      const access = row.access || row.flags || "";
+      return {
+        id: `amxbans-admin:${row.id || row.username || row.steamid}`,
+        login: String(row.username || row.nickname || row.nick || row.steamid || "admin"),
+        nickname: String(row.nickname || row.nick || row.username || row.steamid || "Admin"),
+        steamId: String(row.steamid || row.authid || "").trim(),
+        service: "amxbans_admin",
+        serviceName: amxAccessRole(access),
+        tariffName: "AMXBans/FreshBans",
+        role: amxAccessRole(access),
+        issuedAt: row.created ? new Date(Number(row.created) * 1000).toISOString() : new Date().toISOString(),
+        expiresAt: expiresRaw > 0 ? new Date(expiresRaw * 1000).toISOString() : ""
+      };
+    })
+    .filter((item) => !item.expiresAt || Date.parse(item.expiresAt) > now * 1000);
+}
+
+function buildRoleGroups(db, externalPrivileges = []) {
   const groups = ROLE_GROUPS.map((group) => ({ ...group, members: [] }));
   const pushMember = (role, nick, note) => {
     const group = groups.find((item) => item.id === roleGroupId(role)) || groups.at(-1);
@@ -906,6 +1032,13 @@ function buildRoleGroups(db) {
     const nick = item.nickname || item.steamId || item.login;
     const expires = item.expiresAt ? `до ${new Date(item.expiresAt).toLocaleDateString("ru-RU")}` : "навсегда";
     pushMember(item.role, nick, `${item.serviceName} · ${expires}`);
+  }
+
+  for (const item of externalPrivileges) {
+    if (!item.role) continue;
+    const nick = item.nickname || item.steamId || item.login;
+    const expires = item.expiresAt ? `до ${new Date(item.expiresAt).toLocaleDateString("ru-RU")}` : "навсегда";
+    pushMember(item.role, nick, `${item.tariffName} · ${expires}`);
   }
 
   return groups;
@@ -1110,14 +1243,16 @@ async function queryRconStatus() {
 
 async function serverLiveSnapshot(db = null) {
   const currentDb = db || await readDb();
-  const [status, rconStatus, a2sPlayers, bans] = await Promise.all([
+  const [status, rconStatus, a2sPlayers, bans, externalPrivileges] = await Promise.all([
     serverStatus(),
     queryRconStatus(),
     queryServerPlayers(BRAND.serverAddress),
-    getBans(currentDb).catch(() => [])
+    getBans(currentDb).catch(() => []),
+    queryAmxbansPrivileges().catch(() => [])
   ]);
   const players = rconStatus.players?.length ? rconStatus.players : a2sPlayers;
   const maxPlayers = rconStatus.maxPlayers || status.maxPlayers || 32;
+  const entitlements = [...activeEntitlements(currentDb), ...externalPrivileges];
   return {
     status: {
       ...status,
@@ -1131,8 +1266,8 @@ async function serverLiveSnapshot(db = null) {
     },
     players,
     bans,
-    entitlements: activeEntitlements(currentDb),
-    roleGroups: buildRoleGroups(currentDb)
+    entitlements,
+    roleGroups: buildRoleGroups(currentDb, externalPrivileges)
   };
 }
 
@@ -3612,7 +3747,8 @@ const server = createServer(async (req, res) => {
           rcon: Boolean(process.env.RCON_PASSWORD)
         },
         bans: {
-          externalApi: Boolean(process.env.BAN_API_URL)
+          externalApi: Boolean(process.env.BAN_API_URL),
+          amxbans: AMXBANS_CONFIGURED
         }
       });
       return;

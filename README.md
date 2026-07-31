@@ -64,6 +64,17 @@ BAN_API_KEY=секрет_бан_api
 SERVER_WEBHOOK_SECRET=секрет_для_сервера
 UNBAN_PRICE=30000
 UNBAN_COMMAND_TEMPLATE=amx_unban "{target}"
+
+# FreshBans / AMXBans MySQL
+AMXBANS_DB_HOST=mysql.example.com
+AMXBANS_DB_PORT=3306
+AMXBANS_DB_USER=oldera
+AMXBANS_DB_PASSWORD=секретный_mysql_пароль
+AMXBANS_DB_NAME=amxbans
+AMXBANS_TABLE_PREFIX=amx_
+
+# или одной строкой
+AMXBANS_DATABASE_URL=mysql://user:password@host:3306/amxbans
 ```
 
 ## Связь с CS 1.6 сервером
@@ -95,6 +106,25 @@ curl -X POST https://oldera.uz/api/server/ban-event \
 ```
 
 Даже без отдельного плагина сайт подтянет SteamID/IP из стандартных списков банов сервера. Если нужна причина, админ и точное время до разбана, на сервере нужен AMXBans/FreshBans или свой AMXX-плагин, который при бане делает такой POST-запрос. Если у хостинга появится готовый API банов, вместо webhook можно указать `BAN_API_URL`.
+
+### FreshBans / AMXBans
+
+Для полноценной таблицы банов с причиной, админом и сроком нужен FreshBans или AMXBans с MySQL.
+
+Что нужно:
+
+1. Создать MySQL базу, доступную и игровому серверу, и Render.
+2. Загрузить `.amxx` плагины FreshBans/AMXBans на сервер в `addons/amxmodx/plugins/`.
+3. Добавить плагины в `addons/amxmodx/configs/plugins.ini`.
+4. В конфиге FreshBans/AMXBans указать MySQL host, user, password, database и prefix.
+5. Эти же данные добавить в Render Environment через `AMXBANS_*`.
+
+Сайт читает:
+
+- `${AMXBANS_TABLE_PREFIX}bans` для банов;
+- `${AMXBANS_TABLE_PREFIX}amxadmins` или `${AMXBANS_TABLE_PREFIX}admins` для админов/VIP/модеров.
+
+Если база ещё не подключена, сайт продолжает работать через RCON `listid/listip`.
 
 ### Callback URL
 
