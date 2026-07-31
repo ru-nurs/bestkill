@@ -366,6 +366,41 @@ async function amxbansTableExists(table) {
   return rows.length > 0;
 }
 
+async function amxbansDiagnostic() {
+  if (!AMXBANS_CONFIGURED) {
+    return {
+      configured: false,
+      connected: false,
+      prefix: AMXBANS_TABLE_PREFIX,
+      message: "AMXBans/FreshBans MySQL is not configured in Render Environment"
+    };
+  }
+  try {
+    await amxbansQuery("SELECT 1 AS ok");
+    const bansTable = `${AMXBANS_TABLE_PREFIX}bans`;
+    const adminsTable = `${AMXBANS_TABLE_PREFIX}amxadmins`;
+    const legacyAdminsTable = `${AMXBANS_TABLE_PREFIX}admins`;
+    return {
+      configured: true,
+      connected: true,
+      prefix: AMXBANS_TABLE_PREFIX,
+      tables: {
+        bans: await amxbansTableExists(bansTable),
+        amxadmins: await amxbansTableExists(adminsTable),
+        admins: await amxbansTableExists(legacyAdminsTable)
+      },
+      message: "AMXBans/FreshBans MySQL connection is working"
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      prefix: AMXBANS_TABLE_PREFIX,
+      message: error.message
+    };
+  }
+}
+
 async function readDb() {
   if (SUPABASE_CONFIGURED) {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?id=eq.oldera&select=data&limit=1`, {
@@ -2850,6 +2885,15 @@ async function handleApi(req, res, pathname) {
   if (pathname === "/api/server-live" && req.method === "GET") {
     const db = await readDb();
     json(res, 200, { ok: true, ...(await serverLiveSnapshot(db)) });
+    return;
+  }
+
+  if (pathname === "/api/integration/status" && req.method === "GET") {
+    json(res, 200, {
+      ok: true,
+      rcon: Boolean(process.env.RCON_PASSWORD),
+      amxbans: await amxbansDiagnostic()
+    });
     return;
   }
 

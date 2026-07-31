@@ -126,6 +126,14 @@ curl -X POST https://oldera.uz/api/server/ban-event \
 
 Если база ещё не подключена, сайт продолжает работать через RCON `listid/listip`.
 
+Диагностика подключения:
+
+```text
+https://oldera.uz/api/integration/status
+```
+
+Если MySQL подключен правильно, там будет `configured: true` и `connected: true`.
+
 ### Callback URL
 
 - Click callback: `https://oldera.uz/api/payments/click`
