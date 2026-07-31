@@ -919,6 +919,80 @@ function parseA2sInfo(buffer) {
   return null;
 }
 
+function parseA2sPlayers(buffer) {
+  if (buffer.length < 6 || buffer.readInt32LE(0) !== -1 || buffer[4] !== 0x44) return [];
+  const players = [];
+  let offset = 6;
+  while (offset < buffer.length) {
+    const slot = buffer[offset++];
+    let name; [name, offset] = readCString(buffer, offset);
+    if (offset + 8 > buffer.length) break;
+    const score = buffer.readInt32LE(offset);
+    offset += 4;
+    const duration = buffer.readFloatLE(offset);
+    offset += 4;
+    players.push({
+      slot,
+      name: name || `Player ${slot}`,
+      steamId: "",
+      frags: score,
+      time: formatPlayerDuration(duration),
+      ping: 0,
+      loss: 0,
+      address: ""
+    });
+  }
+  return players;
+}
+
+function formatPlayerDuration(seconds) {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds || 0)));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = safeSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+    : `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+async function queryServerPlayers(address) {
+  const { host, port } = splitAddress(address);
+  const challengeRequest = Buffer.from([0xff, 0xff, 0xff, 0xff, 0x55, 0xff, 0xff, 0xff, 0xff]);
+
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    let done = false;
+    const finish = (players) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      socket.close();
+      resolve(players);
+    };
+    const timer = setTimeout(() => finish([]), 1800);
+
+    socket.on("message", (message) => {
+      try {
+        if (message.length >= 9 && message.readInt32LE(0) === -1 && message[4] === 0x41) {
+          const challenge = message.readInt32LE(5);
+          const request = Buffer.alloc(9);
+          request.writeInt32LE(-1, 0);
+          request[4] = 0x55;
+          request.writeInt32LE(challenge, 5);
+          socket.send(request, port, host);
+          return;
+        }
+        finish(parseA2sPlayers(message));
+      } catch {
+        finish([]);
+      }
+    });
+
+    socket.once("error", () => finish([]));
+    socket.send(challengeRequest, port, host);
+  });
+}
+
 async function serverStatus() {
   const live = await queryServerInfo(BRAND.serverAddress);
   return {
@@ -939,7 +1013,7 @@ function parseRconStatus(output) {
     const hostname = line.match(/^hostname:\s*(.+)$/i);
     const map = line.match(/^map\s*:\s*([^\s]+)/i);
     const players = line.match(/^players\s*:\s*(\d+)\s+active\s+\((\d+)\s+max\)/i);
-    const player = line.match(/^#\s*(\d+)\s+"([^"]+)"\s+(\d+)\s+(\S+)\s+(-?\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\S+)/);
+    const player = line.match(/^#\s*(\d+)\s+"([^"]+)"\s+(\d+)\s+(\S+)\s+(-?\d+)\s+(\S+)\s+(\d+)\s+(\d+)(?:\s+(\S+))?/);
 
     if (hostname) result.name = hostname[1].trim();
     if (map) result.map = map[1].trim();
@@ -957,7 +1031,7 @@ function parseRconStatus(output) {
         time: player[6],
         ping: Number(player[7]),
         loss: Number(player[8]),
-        address: player[9]
+        address: player[9] || ""
       });
     }
   }
@@ -973,12 +1047,13 @@ async function queryRconStatus() {
 
 async function serverLiveSnapshot(db = null) {
   const currentDb = db || await readDb();
-  const [status, rconStatus, bans] = await Promise.all([
+  const [status, rconStatus, a2sPlayers, bans] = await Promise.all([
     serverStatus(),
     queryRconStatus(),
+    queryServerPlayers(BRAND.serverAddress),
     getBans(currentDb).catch(() => [])
   ]);
-  const players = rconStatus.players || [];
+  const players = rconStatus.players?.length ? rconStatus.players : a2sPlayers;
   const maxPlayers = rconStatus.maxPlayers || status.maxPlayers || 32;
   return {
     status: {
