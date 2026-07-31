@@ -22,6 +22,8 @@ const PAYMENT_SUPPORT_URL = String(process.env.PAYMENT_SUPPORT_URL || "").trim()
 const MANUAL_PAYMENT_CONFIGURED = PAYMENT_CARD_DIGITS.length >= 12
   && PAYMENT_CARD_DIGITS.length <= 19
   && Boolean(PAYMENT_CARD_HOLDER);
+const MAIN_DB_URL = String(process.env.MAIN_DB || process.env.DATABASE_URL || process.env.POSTGRES_URL || "").trim();
+const MAIN_DB_CONFIGURED = Boolean(MAIN_DB_URL);
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
 const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
@@ -327,6 +329,106 @@ function supabaseHeaders() {
   };
 }
 
+let mainDbPool = null;
+let mainDbReady = false;
+
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizePostgresConnectionString(value) {
+  const raw = String(value || "").trim();
+  const protocolEnd = raw.indexOf("://");
+  if (protocolEnd < 0) return raw;
+  const authStart = protocolEnd + 3;
+  const slashAfterAuth = raw.indexOf("/", authStart);
+  const authEnd = slashAfterAuth < 0 ? raw.length : slashAfterAuth;
+  const at = raw.lastIndexOf("@", authEnd);
+  if (at < authStart) return raw;
+
+  const userInfo = raw.slice(authStart, at);
+  const colon = userInfo.indexOf(":");
+  if (colon < 0) return raw;
+
+  const user = encodeURIComponent(safeDecodeURIComponent(userInfo.slice(0, colon)));
+  const password = encodeURIComponent(safeDecodeURIComponent(userInfo.slice(colon + 1)));
+  return `${raw.slice(0, authStart)}${user}:${password}${raw.slice(at)}`;
+}
+
+async function getMainDbPool() {
+  if (!MAIN_DB_CONFIGURED) return null;
+  if (mainDbPool) return mainDbPool;
+  const pg = await import("pg");
+  mainDbPool = new pg.Pool({
+    connectionString: normalizePostgresConnectionString(MAIN_DB_URL),
+    ssl: { rejectUnauthorized: false },
+    max: 3,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 8_000
+  });
+  return mainDbPool;
+}
+
+async function ensureMainDb() {
+  if (mainDbReady) return;
+  const pool = await getMainDbPool();
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      id text PRIMARY KEY,
+      data jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  mainDbReady = true;
+}
+
+async function readMainDb() {
+  await ensureMainDb();
+  const pool = await getMainDbPool();
+  if (!pool) return emptyDb();
+  const result = await pool.query("SELECT data FROM app_state WHERE id = $1 LIMIT 1", ["oldera"]);
+  return normalizeDb(result.rows[0]?.data || {});
+}
+
+async function writeMainDb(db) {
+  await ensureMainDb();
+  const pool = await getMainDbPool();
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO app_state (id, data, updated_at)
+     VALUES ($1, $2::jsonb, now())
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+    ["oldera", JSON.stringify(normalizeDb(db))]
+  );
+}
+
+async function mainDbDiagnostic() {
+  if (!MAIN_DB_CONFIGURED) {
+    return { configured: false, connected: false, message: "MAIN_DB is not configured" };
+  }
+  try {
+    const db = await readMainDb();
+    return {
+      configured: true,
+      connected: true,
+      users: db.users.length,
+      orders: db.orders.length,
+      message: "PostgreSQL persistence is working"
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      message: error.message
+    };
+  }
+}
+
 let amxbansPool = null;
 
 async function getAmxbansPool() {
@@ -405,6 +507,10 @@ async function amxbansDiagnostic() {
 }
 
 async function readDb() {
+  if (MAIN_DB_CONFIGURED) {
+    return readMainDb();
+  }
+
   if (SUPABASE_CONFIGURED) {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?id=eq.oldera&select=data&limit=1`, {
       headers: supabaseHeaders()
@@ -422,6 +528,11 @@ async function readDb() {
 }
 
 async function writeDb(db) {
+  if (MAIN_DB_CONFIGURED) {
+    await writeMainDb(db);
+    return;
+  }
+
   if (SUPABASE_CONFIGURED) {
     const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?on_conflict=id`, {
       method: "POST",
@@ -2894,6 +3005,8 @@ async function handleApi(req, res, pathname) {
   if (pathname === "/api/integration/status" && req.method === "GET") {
     json(res, 200, {
       ok: true,
+      persistence: MAIN_DB_CONFIGURED ? "postgresql" : SUPABASE_CONFIGURED ? "supabase" : "local-file",
+      mainDb: await mainDbDiagnostic(),
       rcon: Boolean(process.env.RCON_PASSWORD),
       amxbans: await amxbansDiagnostic()
     });
@@ -3788,7 +3901,7 @@ const server = createServer(async (req, res) => {
           payme: Boolean(process.env.PAYME_MERCHANT_ID),
           manualCard: MANUAL_PAYMENT_CONFIGURED
         },
-        persistence: SUPABASE_CONFIGURED ? "supabase" : "local-file",
+        persistence: MAIN_DB_CONFIGURED ? "postgresql" : SUPABASE_CONFIGURED ? "supabase" : "local-file",
         delivery: {
           adminApi: Boolean(ADMIN_API_URL),
           rcon: Boolean(process.env.RCON_PASSWORD)
