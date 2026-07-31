@@ -66,6 +66,36 @@ UNBAN_PRICE=30000
 UNBAN_COMMAND_TEMPLATE=amx_unban "{target}"
 ```
 
+## Связь с CS 1.6 сервером
+
+Сайт уже умеет работать с сервером `195.158.4.108:27047` в таком режиме:
+
+- `/api/server-live` возвращает карту, онлайн, игроков из RCON `status`, баны, активные услуги и группы администрации;
+- `/stats` показывает живую статистику и обновляется автоматически;
+- `/admins` показывает роли из профилей сайта и активных услуг, выданных через магазин;
+- `/banlist` принимает реальные баны через webhook и обновляется автоматически.
+
+Минимум для связи:
+
+```text
+RCON_HOST=195.158.4.108
+RCON_PORT=27047
+RCON_PASSWORD=ваш_rcon_password_из_server.cfg
+SERVER_WEBHOOK_SECRET=любой_длинный_секрет
+UNBAN_COMMAND_TEMPLATE=amx_unban "{target}"
+```
+
+Чтобы сервер или админ-панель отправляли бан на сайт:
+
+```bash
+curl -X POST https://oldera.uz/api/server/ban-event \
+  -H "Content-Type: application/json" \
+  -H "x-server-secret: SERVER_WEBHOOK_SECRET" \
+  -d '{"player":"Nick","steamId":"STEAM_0:1:12345","reason":"Cheats","duration":"7 дней","bannedUntil":"2026-08-07T12:00:00.000Z","admin":"Admin"}'
+```
+
+Если на сервере стоит AMXBans/FreshBans или свой AMXX-плагин, его нужно настроить так, чтобы при бане он делал такой POST-запрос. Если у хостинга появится готовый API банов, вместо webhook можно указать `BAN_API_URL`.
+
 ### Callback URL
 
 - Click callback: `https://oldera.uz/api/payments/click`

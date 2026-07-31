@@ -773,6 +773,81 @@ function normalizeBan(item) {
   };
 }
 
+function orderExpiresAt(order) {
+  const days = parseDays(order.tariffName);
+  if (!days) return "";
+  const createdAt = Date.parse(order.deliveryFinishedAt || order.createdAt);
+  if (!Number.isFinite(createdAt)) return "";
+  return new Date(createdAt + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function serviceRoleTitle(order) {
+  const value = [order.service, order.serviceName].join(" ").toLowerCase();
+  if (value.includes("moder")) return "Модератор";
+  if (value.includes("admin") || value.includes("админ")) return "Администратор";
+  if (value.includes("vip") || value.includes("вип")) return "VIP";
+  if (value.includes("immunity") || value.includes("иммунитет")) return "VIP";
+  return "";
+}
+
+function roleGroupId(role) {
+  const value = String(role || "").toLowerCase();
+  if (value.includes("владел")) return "owner";
+  if (value.includes("гл.") || value.includes("главн")) return "head_admin";
+  if (value.includes("админист")) return "admin";
+  if (value.includes("модера")) return "moderator";
+  if (value.includes("старост")) return "elder";
+  if (value.includes("vip") || value.includes("вип")) return "vip";
+  return "user";
+}
+
+function activeEntitlements(db) {
+  const now = Date.now();
+  return db.orders
+    .filter((order) => order.status === "paid-issued")
+    .map((order) => {
+      const expiresAt = orderExpiresAt(order);
+      return {
+        id: order.id,
+        login: order.login,
+        nickname: order.nickname || "",
+        steamId: order.steamId || "",
+        service: order.service,
+        serviceName: order.serviceName || "Услуга",
+        tariffName: order.tariffName || "",
+        role: serviceRoleTitle(order),
+        issuedAt: order.deliveryFinishedAt || order.createdAt,
+        expiresAt
+      };
+    })
+    .filter((item) => !item.expiresAt || Date.parse(item.expiresAt) > now)
+    .sort((left, right) => Date.parse(right.issuedAt) - Date.parse(left.issuedAt));
+}
+
+function buildRoleGroups(db) {
+  const groups = ROLE_GROUPS.map((group) => ({ ...group, members: [] }));
+  const pushMember = (role, nick, note) => {
+    const group = groups.find((item) => item.id === roleGroupId(role)) || groups.at(-1);
+    if (group.members.some((member) => member.nick.toLowerCase() === nick.toLowerCase())) return;
+    group.members.push({ nick, note });
+  };
+
+  for (const user of db.users) {
+    if (user.role && user.role !== "Пользователь") {
+      pushMember(user.role, user.profile?.serverNick || user.profile?.displayName || user.login, "Профиль сайта");
+    }
+  }
+
+  for (const item of activeEntitlements(db)) {
+    if (!item.role) continue;
+    const nick = item.nickname || item.steamId || item.login;
+    const expires = item.expiresAt ? `до ${new Date(item.expiresAt).toLocaleDateString("ru-RU")}` : "навсегда";
+    pushMember(item.role, nick, `${item.serviceName} · ${expires}`);
+  }
+
+  return groups;
+}
+
 async function queryServerInfo(address) {
   const { host, port } = splitAddress(address);
   const request = Buffer.concat([
@@ -854,6 +929,72 @@ async function serverStatus() {
     maxPlayers: Number.isFinite(live?.maxPlayers) ? live.maxPlayers : 32,
     online: Boolean(live?.online),
     checkedAt: new Date().toISOString()
+  };
+}
+
+function parseRconStatus(output) {
+  const result = { players: [], raw: String(output || "") };
+  for (const rawLine of result.raw.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const hostname = line.match(/^hostname:\s*(.+)$/i);
+    const map = line.match(/^map\s*:\s*([^\s]+)/i);
+    const players = line.match(/^players\s*:\s*(\d+)\s+active\s+\((\d+)\s+max\)/i);
+    const player = line.match(/^#\s*(\d+)\s+"([^"]+)"\s+(\d+)\s+(\S+)\s+(-?\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\S+)/);
+
+    if (hostname) result.name = hostname[1].trim();
+    if (map) result.map = map[1].trim();
+    if (players) {
+      result.playersCount = Number(players[1]);
+      result.maxPlayers = Number(players[2]);
+    }
+    if (player) {
+      result.players.push({
+        slot: Number(player[1]),
+        name: player[2],
+        userid: player[3],
+        steamId: player[4],
+        frags: Number(player[5]),
+        time: player[6],
+        ping: Number(player[7]),
+        loss: Number(player[8]),
+        address: player[9]
+      });
+    }
+  }
+  return result;
+}
+
+async function queryRconStatus() {
+  if (!process.env.RCON_PASSWORD) return { ok: false, skipped: true, players: [] };
+  const response = await sendRconCommand("status");
+  if (!response.ok) return { ...response, players: [] };
+  return { ok: true, ...parseRconStatus(response.message) };
+}
+
+async function serverLiveSnapshot(db = null) {
+  const currentDb = db || await readDb();
+  const [status, rconStatus, bans] = await Promise.all([
+    serverStatus(),
+    queryRconStatus(),
+    getBans(currentDb).catch(() => [])
+  ]);
+  const players = rconStatus.players || [];
+  const maxPlayers = rconStatus.maxPlayers || status.maxPlayers || 32;
+  return {
+    status: {
+      ...status,
+      name: rconStatus.name || status.name,
+      map: rconStatus.map || status.map,
+      players: Number.isFinite(rconStatus.playersCount) ? rconStatus.playersCount : status.players,
+      maxPlayers,
+      online: status.online || rconStatus.ok,
+      rcon: Boolean(rconStatus.ok),
+      checkedAt: new Date().toISOString()
+    },
+    players,
+    bans,
+    entitlements: activeEntitlements(currentDb),
+    roleGroups: buildRoleGroups(currentDb)
   };
 }
 
@@ -944,8 +1085,8 @@ function avatarLetter(name) {
 
 function onlineUsersHtml() {
   return `<section class="panel online-panel">
-    <h3>Сейчас онлайн <span>${ONLINE_USERS.length}</span></h3>
-    <div class="online-list">
+    <h3>Сейчас онлайн <span id="live-online-count">${ONLINE_USERS.length}</span></h3>
+    <div class="online-list" id="live-online-sidebar">
       ${ONLINE_USERS.length ? ONLINE_USERS.map((user) => `<article class="online-user" style="--user-color:${user.color}">
         <div class="avatar">${avatarLetter(user.nick)}</div>
         <div><b>${escapeHtml(user.nick)}</b><small>${escapeHtml(user.role)}</small></div>
@@ -1166,7 +1307,7 @@ function serviceCard(service) {
 
 function roleGroupsHtml({ compact = false } = {}) {
   const groups = compact ? ROLE_GROUPS.slice(0, 5) : ROLE_GROUPS;
-  return `<div class="role-grid ${compact ? "compact" : ""}">
+  return `<div class="role-grid ${compact ? "compact" : ""}" data-live-role-groups="${compact ? "compact" : "full"}">
     ${groups.map((group) => `<article class="role-card" style="--role:${group.color}">
       <div class="role-title">
         <span></span>
@@ -1261,16 +1402,41 @@ function simplePage(title, pathName, body) {
 function adminsPage() {
   const rows = ROLE_GROUPS.flatMap((group) => group.members.map((member) => ({ group, member })));
   return simplePage("Администраторы", "/admins", `<h2>Администрация проекта</h2>
-    <p class="note">Список администрации пока пуст.</p>
+    <p class="note">Список подтягивается из ролей профилей и активных услуг, выданных через сайт.</p>
     ${roleGroupsHtml()}
     <table class="role-table"><thead><tr><th>#</th><th>Пользователь</th><th>Группа</th><th>Статус</th></tr></thead>
-    <tbody>${rows.length ? rows.map((item, index) => `<tr><td>${index + 1}</td><td><b style="color:${item.group.color}">${escapeHtml(item.member.nick)}</b></td><td>${escapeHtml(item.group.title)}</td><td>${escapeHtml(item.member.note)}</td></tr>`).join("") : `<tr><td colspan="4" class="empty-cell">Пользователей пока нет.</td></tr>`}</tbody></table>`);
+    <tbody id="live-admin-rows">${rows.length ? rows.map((item, index) => `<tr><td>${index + 1}</td><td><b style="color:${item.group.color}">${escapeHtml(item.member.nick)}</b></td><td>${escapeHtml(item.group.title)}</td><td>${escapeHtml(item.member.note)}</td></tr>`).join("") : `<tr><td colspan="4" class="empty-cell">Пользователей пока нет.</td></tr>`}</tbody></table>`);
 }
 
 function usersPage() {
   return simplePage("Пользователи", "/users", `<h2>Пользователи проекта</h2>
     <p class="note">Пользователей пока нет. Новые аккаунты появятся после регистрации.</p>
     ${roleGroupsHtml()}`);
+}
+
+function statsPage() {
+  return simplePage("Статистика", "/stats", `<h2>Игровая статистика</h2>
+    <p class="note">Онлайн, карта, игроки и активные привилегии обновляются автоматически с сервера.</p>
+    <section class="live-grid">
+      <article class="live-card"><span>Сервер</span><strong id="stats-server-state">Проверяем...</strong></article>
+      <article class="live-card"><span>Карта</span><strong id="stats-map">Загрузка...</strong></article>
+      <article class="live-card"><span>Игроков</span><strong id="stats-players-count">0/32</strong></article>
+      <article class="live-card"><span>Банов</span><strong id="stats-bans-count">0</strong></article>
+    </section>
+    <h3>Игроки онлайн</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Ник</th><th>Steam ID</th><th>Счёт</th><th>Время</th><th>Пинг</th></tr></thead>
+        <tbody id="live-player-rows"><tr><td colspan="6" class="empty-cell">Игроков онлайн пока нет</td></tr></tbody>
+      </table>
+    </div>
+    <h3>Активные услуги</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Игрок</th><th>Услуга</th><th>Тариф</th><th>Действует до</th></tr></thead>
+        <tbody id="live-service-rows"><tr><td colspan="4" class="empty-cell">Активных услуг пока нет</td></tr></tbody>
+      </table>
+    </div>`);
 }
 
 function ruleSection(title, tone, items) {
@@ -1531,8 +1697,10 @@ body{font-size:14px;background-position:center 115px;background-size:cover}
 .profile-section{padding:26px 28px;border-bottom:1px solid #293648}.profile-section:last-child{border-bottom:0}.profile-section h3{margin:0 0 20px;font-size:22px}.profile-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border:1px solid #293648}.profile-info-row{display:grid;grid-template-columns:130px minmax(0,1fr);gap:16px;padding:15px 17px;border-bottom:1px solid #293648}.profile-info-row:nth-last-child(-n+2){border-bottom:0}.profile-info-row span{color:#8e9caf}.profile-info-row strong{color:#dbe5f3;overflow-wrap:anywhere}.profile-bio{margin:0;color:#aebacd;line-height:1.65}
 .account-list{display:grid;gap:10px}.account-list-item{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:12px;align-items:center;padding:13px;background:#0b1421;border:1px solid #29394d}.account-list-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;overflow:hidden;background:#253247;color:#fff;font-weight:900}.account-list-avatar img{width:100%;height:100%;object-fit:cover}.account-list-copy{min-width:0}.account-list-copy strong,.account-list-copy small{display:block}.account-list-copy small{margin-top:4px;color:#8e9caf;overflow-wrap:anywhere}.account-list-item button{border:1px solid #8e2b3c;background:#641522;color:#fff;padding:8px 10px;cursor:pointer}
 .account-empty{padding:24px;text-align:center;color:#8796aa;border:1px dashed #31445a}.account-form{display:grid;gap:13px}.account-form.two{grid-template-columns:repeat(2,minmax(0,1fr))}.account-form label{display:grid;gap:7px;color:#c8d3e2}.account-form .wide{grid-column:1/-1}.account-form input,.account-form textarea{background:#0b1421;border-color:#34465d}.account-form textarea{min-height:110px}.account-form-actions{display:flex;gap:10px;align-items:center}.account-form-actions button{min-height:42px}.avatar-preview-row{display:flex;align-items:center;gap:14px}.avatar-preview-row .profile-avatar{width:86px;height:86px;flex-basis:86px;border-width:3px;font-size:30px}.wall-editor{display:grid;gap:10px}.wall-editor textarea{min-height:120px;background:#fff;color:#17202d;border-color:#cad0d8}.wall-post{padding:16px;border:1px solid #29394d;background:#0b1421}.wall-post-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.wall-post time{color:#7f8da1}.wall-post p{margin:0;color:#d3deeb;white-space:pre-wrap;line-height:1.55}.section-title-row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.section-title-row h2{margin:0}.section-title-row span{color:#7f8da1}.account-search-results{display:grid;gap:8px}.account-result{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px;background:#0b1421;border:1px solid #29394d}.account-result button{border:0;background:#277c50;color:#fff;padding:8px 11px;cursor:pointer}.notification-dot{width:10px;height:10px;border-radius:50%;background:#e3425b}.service-status{color:#77e7a2;font-weight:700}
+.live-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0 28px}.live-card{padding:18px;background:#0b1421;border:1px solid #29394d}.live-card span{display:block;margin-bottom:7px;color:#8796aa;font-size:13px}.live-card strong{display:block;color:#fff;font-size:20px;overflow-wrap:anywhere}.panel h3+ .table-wrap{margin-top:12px}.live-card:first-child strong{color:#73f0a4}
 @media (max-width:900px){
 .topbar{height:78px;padding:0 12px;display:flex;justify-content:space-between;gap:10px}.mobile-menu-toggle{display:grid;place-items:center;width:48px;height:48px;flex:0 0 48px;border:1px solid #3b4352;background:#171a23;color:#dbe5f5;font-size:25px;cursor:pointer}.nav{display:none;position:absolute;left:12px;right:12px;top:70px;height:auto;width:auto!important;z-index:17;overflow:visible!important;background:#171a23;border:1px solid #3b4352;box-shadow:0 20px 45px #000b}.nav.show{display:grid}.nav a,.nav a.active{height:50px;min-width:0;border-radius:0;padding:0 18px;border-bottom:1px solid #323945;background:#171a23;font-size:14px}.nav a.active{color:#f44c81}.user-mini,.user-mini.account-trigger{position:relative;right:auto;display:grid;min-width:0;width:min(245px,calc(100vw - 86px));height:58px;padding:7px 10px;border-color:#333a48;background:#fff;color:#202532}.user-mini:not(.account-trigger){display:flex;align-items:center;justify-content:center}.user-trigger-copy small{color:#8892a2}.account-dropdown{position:absolute;top:68px;right:0;width:min(330px,calc(100vw - 62px));max-height:calc(100vh - 90px);overflow:auto}.crumb{height:58px;padding:0 18px}.layout{padding:18px 10px}.account-tabs{margin:0 -10px}.account-tabs button{padding:9px 13px}.account-panel{margin:0 -10px}.profile-cover{height:135px}.profile-identity{align-items:center;padding:0 18px 20px;margin-top:-44px}.profile-avatar{width:94px;height:94px;flex-basis:94px;font-size:34px}.profile-name h2{font-size:21px;overflow-wrap:anywhere}.profile-summary{grid-template-columns:1fr}.profile-summary>div{border-right:0;border-bottom:1px solid #293648}.profile-summary>div:last-child{border-bottom:0}.profile-section{padding:22px 18px}.profile-info-grid{grid-template-columns:1fr}.profile-info-row{grid-template-columns:105px minmax(0,1fr)}.profile-info-row:nth-last-child(2){border-bottom:1px solid #293648}.account-form.two{grid-template-columns:1fr}.account-form .wide{grid-column:auto}.account-form-actions{align-items:stretch;flex-direction:column}.account-form-actions button{width:100%}.account-list-item{grid-template-columns:42px minmax(0,1fr)}.account-list-item>button{grid-column:2;justify-self:start}.section-title-row{align-items:flex-start;flex-direction:column}.wall-editor textarea{min-height:150px}
+.live-grid{grid-template-columns:1fr 1fr}
 }
 `;
 }
@@ -1917,16 +2085,92 @@ function avatarDataUrl(file) {
 }
 
 async function refreshStatus() {
-  const response = await fetch('/api/server-status');
+  const response = await fetch('/api/server-live');
   const data = await response.json();
-  const max = data.maxPlayers || 32;
-  const players = data.players || 0;
+  if (!data.ok) return;
+  const status = data.status || {};
+  const max = status.maxPlayers || 32;
+  const players = status.players || 0;
   const percent = Math.min(100, Math.round(players / max * 100));
-  qs('#server-map') && (qs('#server-map').textContent = data.map || 'Не определено');
+  qs('#server-map') && (qs('#server-map').textContent = status.map || 'Не определено');
   qs('#server-players') && (qs('#server-players').textContent = players + '/' + max);
   qs('#server-total') && (qs('#server-total').textContent = players + '/' + max);
   qs('#server-fill') && (qs('#server-fill').style.width = percent + '%');
   qs('#total-fill') && (qs('#total-fill').style.width = percent + '%');
+  renderLiveOnline(data.players || []);
+  renderLiveRoles(data.roleGroups || []);
+  renderLiveAdmins(data.roleGroups || []);
+  renderLiveStats(data);
+}
+
+function liveDate(value) {
+  if (!value) return 'Навсегда';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Навсегда' : date.toLocaleDateString('ru-RU');
+}
+
+function renderLiveOnline(players) {
+  const list = qs('#live-online-sidebar');
+  qs('#live-online-count') && (qs('#live-online-count').textContent = String(players.length));
+  if (!list) return;
+  list.innerHTML = players.length ? players.slice(0, 10).map((player) =>
+    '<article class="online-user" style="--user-color:#4fd7ff"><div class="avatar">' +
+    escapeText(player.name.slice(0, 1).toUpperCase()) + '</div><div><b>' +
+    escapeText(player.name) + '</b><small>Онлайн · ping ' + escapeText(player.ping || 0) + '</small></div></article>'
+  ).join('') : '<p class="empty">Пока никого нет.</p>';
+}
+
+function renderLiveRoles(groups) {
+  qsa('[data-live-role-groups]').forEach((root) => {
+    const compact = root.dataset.liveRoleGroups === 'compact';
+    const visible = compact ? groups.slice(0, 5) : groups;
+    root.innerHTML = visible.map((group) =>
+      '<article class="role-card" style="--role:' + escapeAttr(group.color) + '"><div class="role-title"><span></span><strong>' +
+      escapeText(group.title) + '</strong></div><div class="role-members">' +
+      (group.members && group.members.length ? group.members.map((member) =>
+        '<div class="role-member"><b>' + escapeText(member.nick) + '</b><small>' + escapeText(member.note) + '</small></div>'
+      ).join('') : '<p class="empty">Список пуст.</p>') +
+      '</div></article>'
+    ).join('');
+  });
+}
+
+function renderLiveAdmins(groups) {
+  const tbody = qs('#live-admin-rows');
+  if (!tbody) return;
+  const rows = groups.flatMap((group) => (group.members || []).map((member) => ({ group, member })));
+  tbody.innerHTML = rows.length ? rows.map((item, index) =>
+    '<tr><td>' + (index + 1) + '</td><td><b style="color:' + escapeAttr(item.group.color) + '">' +
+    escapeText(item.member.nick) + '</b></td><td>' + escapeText(item.group.title) +
+    '</td><td>' + escapeText(item.member.note) + '</td></tr>'
+  ).join('') : '<tr><td colspan="4" class="empty-cell">Пользователей пока нет.</td></tr>';
+}
+
+function renderLiveStats(data) {
+  const status = data.status || {};
+  const max = status.maxPlayers || 32;
+  qs('#stats-server-state') && (qs('#stats-server-state').textContent = status.online ? 'Онлайн' : 'Недоступен');
+  qs('#stats-map') && (qs('#stats-map').textContent = status.map || 'Не определено');
+  qs('#stats-players-count') && (qs('#stats-players-count').textContent = (status.players || 0) + '/' + max);
+  qs('#stats-bans-count') && (qs('#stats-bans-count').textContent = String((data.bans || []).length));
+  const playersRows = qs('#live-player-rows');
+  if (playersRows) {
+    const players = data.players || [];
+    playersRows.innerHTML = players.length ? players.map((player, index) =>
+      '<tr><td>' + (index + 1) + '</td><td>' + escapeText(player.name) + '</td><td>' +
+      escapeText(player.steamId || '') + '</td><td>' + escapeText(player.frags || 0) +
+      '</td><td>' + escapeText(player.time || '') + '</td><td>' + escapeText(player.ping || 0) + '</td></tr>'
+    ).join('') : '<tr><td colspan="6" class="empty-cell">Игроков онлайн пока нет</td></tr>';
+  }
+  const serviceRows = qs('#live-service-rows');
+  if (serviceRows) {
+    const items = data.entitlements || [];
+    serviceRows.innerHTML = items.length ? items.map((item) =>
+      '<tr><td>' + escapeText(item.nickname || item.steamId || item.login) + '</td><td>' +
+      escapeText(item.serviceName) + '</td><td>' + escapeText(item.tariffName) +
+      '</td><td>' + escapeText(liveDate(item.expiresAt)) + '</td></tr>'
+    ).join('') : '<tr><td colspan="4" class="empty-cell">Активных услуг пока нет</td></tr>';
+  }
 }
 
 function fillTariffs() {
@@ -1963,6 +2207,7 @@ qs('#tariff-select')?.addEventListener('change', () => {
 });
 fillTariffs();
 refreshStatus();
+setInterval(refreshStatus, 10000);
 
 qs('#register-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -2183,6 +2428,7 @@ document.addEventListener('click', async (event) => {
 });
 
 loadBans();
+setInterval(loadBans, 15000);
 
 qs('#ticket-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -2325,6 +2571,12 @@ bootSession();
 async function handleApi(req, res, pathname) {
   if (pathname === "/api/server-status" && req.method === "GET") {
     json(res, 200, await serverStatus());
+    return;
+  }
+
+  if (pathname === "/api/server-live" && req.method === "GET") {
+    const db = await readDb();
+    json(res, 200, { ok: true, ...(await serverLiveSnapshot(db)) });
     return;
   }
 
@@ -3183,8 +3435,7 @@ function routePage(pathname) {
     return simplePage(title, pathname, `<h2>${title}</h2><p class="empty">Раздел пустой. Чужие сообщения и новости удалены.</p>`);
   }
   if (pathname === "/stats") {
-    const title = "Статистика";
-    return simplePage(title, pathname, `<h2>${title}</h2><p class="empty">Данные появятся после подключения статистики вашего сервера.</p>`);
+    return statsPage();
   }
   if (pathname === "/demo") {
     return simplePage("Демо", "/demo", `<h2>Демо</h2><p class="empty">Раздел для загрузки демо-записей будет подключен позже.</p>`);
