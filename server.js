@@ -766,7 +766,17 @@ async function getBans(db = null) {
   }
 
   const currentDb = db || await readDb();
-  return currentDb.bans.map(normalizeBan).filter((ban) => !ban.bannedUntil || new Date(ban.bannedUntil).getTime() > Date.now());
+  const storedBans = currentDb.bans
+    .map(normalizeBan)
+    .filter((ban) => !ban.bannedUntil || new Date(ban.bannedUntil).getTime() > Date.now());
+  const rconBans = await queryRconBans();
+  const seen = new Set();
+  return [...storedBans, ...rconBans].filter((ban) => {
+    const key = `${ban.kind || "steam"}:${ban.steamId || ban.ip || ban.player}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizeBan(item) {
@@ -778,6 +788,8 @@ function normalizeBan(item) {
     id: String(item.id || item.banId || randomUUID()),
     player: item.player || item.nickname || item.name || "Unknown",
     steamId: item.steamId || item.authid || item.authId || "",
+    ip: item.ip || "",
+    kind: item.kind || (item.ip ? "ip" : "steam"),
     reason: item.reason || "No reason",
     duration: item.duration || item.length || (bannedUntil ? "temporary" : "permanent"),
     bannedAt,
@@ -785,6 +797,43 @@ function normalizeBan(item) {
     remaining: remainingMinutes === null ? "permanent" : `${remainingMinutes} min`,
     admin: item.admin || ""
   };
+}
+
+function parseRconBanLines(output, kind) {
+  const bans = [];
+  const pattern = kind === "ip"
+    ? /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
+    : /\b(?:STEAM_[0-5]:[01]:\d+|VALVE_[0-5]:[01]:\d+)\b/gi;
+  for (const line of String(output || "").split(/\r?\n/)) {
+    if (/userid|players|hostname|map|server|bad rcon/i.test(line)) continue;
+    const matches = line.match(pattern) || [];
+    for (const value of matches) {
+      bans.push(normalizeBan({
+        id: `${kind}:${value}`,
+        player: value,
+        steamId: kind === "steam" ? value : "",
+        ip: kind === "ip" ? value : "",
+        kind,
+        reason: "Бан на сервере",
+        duration: "по списку сервера",
+        remaining: "не указано",
+        admin: "server"
+      }));
+    }
+  }
+  return bans;
+}
+
+async function queryRconBans() {
+  if (!process.env.RCON_PASSWORD) return [];
+  const [steamResponse, ipResponse] = await Promise.all([
+    sendRconCommand("listid"),
+    sendRconCommand("listip")
+  ]);
+  return [
+    ...(steamResponse.ok ? parseRconBanLines(steamResponse.message, "steam") : []),
+    ...(ipResponse.ok ? parseRconBanLines(ipResponse.message, "ip") : [])
+  ];
 }
 
 function orderExpiresAt(order) {
