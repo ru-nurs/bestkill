@@ -5,3 +5,4 @@ server-configs/
 node_modules/
 deploy-hostinguz-*/
 oldera-hostinguz-node-*.zip
+oldera-hostinguz-php-*.zip
